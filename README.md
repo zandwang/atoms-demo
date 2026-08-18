@@ -42,6 +42,7 @@
 4. 在浏览器访问 <http://localhost:8080>，输入昵称并在右上角设置自己的 endpoint、model 和 API Key，然后创建项目并描述一个待办、笔记或习惯打卡应用。三项配置仅保存在当前浏览器标签页中。
 
 构建后的 `bin/atoms-demo` 不需要 Node.js 运行。默认数据库位于 `./data/atoms-demo.db`；可使用 `ATOMS_DATA_DIR` 指定其他本地目录，使用 `ATOMS_ADDR` 修改监听地址。
+部署平台提供 `PORT` 且未设置 `ATOMS_ADDR` 时，服务会自动监听 `:${PORT}`。
 
 ## 验证
 

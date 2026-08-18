@@ -6,10 +6,10 @@
 
 | 项目 | 状态 | 说明 |
 | --- | --- | --- |
-| 最后更新 | 2026-08-18 | BYOK 代码闭环完成，等待在线部署方案确认 |
-| 当前阶段 | M5 多用户公开测试准备 | 进行中 |
-| 当前阻塞项 | 无代码阻塞；仍缺浏览器人工验收和部署平台/持久化数据库决策 | 当前匿名 workspace 与请求级 BYOK 适合小规模测试，不等同于正式账号系统 |
-| 下一步 | 用户在浏览器设置自己的 Key 完成一次真实生成；随后选择部署平台并评估持久化数据库 | Key 不进入 SQLite、Cookie、日志或构建产物 |
+| 最后更新 | 2026-08-19 | Render 构建适配完成，等待提交后重新部署 |
+| 当前阶段 | M6 线上小规模验收 | 进行中 |
+| 当前阻塞项 | Render 首次失败原因为未安装 `web/node_modules`，已修复；尚未完成重新部署和线上生成验收 | 免费实例的 SQLite 持久化、休眠和限流风险仍存在 |
+| 下一步 | 提交构建修复，Render 重新部署并验证 `/api/health`、页面和一次自定义 endpoint 生成 | 不开启私网 endpoint 放行 |
 | 本地运行目标 | Go 单二进制 | React 仅为构建期依赖 |
 
 ## 状态标记
@@ -99,13 +99,13 @@
 
 完成条件：所有 P0、选定的 P1（版本历史/回滚）和本地验收场景通过；交付物可由他人依文档启动。
 
-### M6：线上部署（当前不在范围内）
+### M6：线上部署
 
-状态：`不做`
+状态：`进行中`
 
-原因：BYOK（含自定义 endpoint/model）已完成，但用户尚未选择部署平台、持久化数据库和匿名 workspace 是否升级为真实账号；当前先完成代码验收。
+原因：用户已选择 Render 进行小规模在线验收；当前先处理构建、端口和健康检查，暂不承诺正式账号和持久化数据。
 
-恢复条件：用户确认要上线后，补充部署平台、域名/访问策略、数据库持久卷和 API Key 注入方案。
+后续条件：补充持久化数据库、真实账号、限流和公开服务成本控制后，才可评估正式多人使用。
 
 ## 开发开始/恢复清单
 
@@ -148,6 +148,29 @@
 ```
 
 ## 开发日志
+
+### 2026-08-19 — M6 Render 构建适配 — 已完成
+
+- 完成：
+  - 定位 Render 构建失败根因：干净构建环境没有安装 `web/node_modules`，TypeScript 因缺少 React/Vite 类型产生大量连锁 JSX 错误。
+  - 让 `make build` 自动依赖 `web-install`，在 Render 等干净环境先执行 `npm ci`。
+  - 增加平台 `PORT` 适配：未设置 `ATOMS_ADDR` 时自动监听 `:${PORT}`。
+- 修改：
+  - `Makefile` — `web-build` 依赖 `web-install`。
+  - `internal/config/config.go`、`internal/config/config_test.go` — 读取 `PORT` 并增加配置测试。
+  - `README.md` — 记录平台端口行为。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache make build` — 通过（本机 Go module stat cache 有非阻断权限警告）。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...`、`go mod verify`、`git diff --check` — 通过。
+- 未完成或风险：
+  - 尚未重新触发 Render 部署；Render 原生 Go 环境需满足项目要求的 Go 版本。
+  - 免费实例本地 SQLite 可能丢失，且没有公开服务限流。
+- 下次从这里继续：
+  1. 提交本次修改并在 Render 保持 Build Command 为 `make build`。
+  2. 配置 Start Command 为 `./bin/atoms-demo`，Health Check Path 为 `/api/health`。
+  3. 重新部署后进行页面、BYOK 和自定义 endpoint 真实生成验收。
 
 ### 2026-08-19 — M5 自定义模型 endpoint/model — 已完成
 

@@ -50,3 +50,17 @@ func TestLoadPrivateEndpointFlag(t *testing.T) {
 		t.Fatal("AllowPrivateModelEndpoint = false, want true")
 	}
 }
+
+func TestLoadUsesPlatformPortWhenAddressIsUnset(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(filename, []byte("PORT=10000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Address != ":10000" {
+		t.Fatalf("Address = %q, want :10000", cfg.Address)
+	}
+}

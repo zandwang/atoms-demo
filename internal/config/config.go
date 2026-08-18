@@ -41,10 +41,21 @@ func Load(envFile string) (Config, error) {
 	}
 
 	return Config{
-		Address:                   valueOrDefault(lookup("ATOMS_ADDR"), defaultAddress),
+		Address:                   addressFromEnv(lookup),
 		DataDir:                   valueOrDefault(lookup("ATOMS_DATA_DIR"), defaultDataDir),
 		AllowPrivateModelEndpoint: parseBool(lookup("ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS")),
 	}, nil
+}
+
+func addressFromEnv(lookup func(string) string) string {
+	address := strings.TrimSpace(lookup("ATOMS_ADDR"))
+	if address == "" {
+		port := strings.TrimSpace(lookup("PORT"))
+		if port != "" {
+			address = ":" + strings.TrimPrefix(port, ":")
+		}
+	}
+	return valueOrDefault(address, defaultAddress)
 }
 
 // ModelStatus reports whether the server supports request-scoped BYOK settings.

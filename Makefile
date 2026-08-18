@@ -15,7 +15,7 @@ dev-api:
 dev-web:
 	cd $(WEB_DIR) && $(NPM) run dev
 
-web-build:
+web-build: web-install
 	cd $(WEB_DIR) && $(NPM) run build
 	touch $(WEB_EMBED_DIR)/.gitkeep
 
