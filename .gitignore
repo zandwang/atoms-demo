@@ -1,0 +1,16 @@
+# Secrets and local runtime data
+.env
+/data/
+
+# Go build output
+/bin/
+
+# Frontend dependencies and generated assets
+/web/node_modules/
+/internal/webembed/dist/*
+!/internal/webembed/dist/.gitkeep
+
+# Test and tooling output
+/coverage/
+/playwright-report/
+/test-results/
