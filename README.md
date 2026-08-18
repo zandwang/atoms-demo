@@ -19,12 +19,12 @@
 
 ## 配置与启动
 
-1. 以 `.env.example` 为参考创建 `.env`，填入下面三个模型变量。不要提交 `.env`。
+1. 以 `.env.example` 为参考创建 `.env`。不要提交 `.env`。模型 endpoint、model 和 API Key 都由每位用户在浏览器中自行设置，不放入 `.env`。
 
    ```dotenv
-   OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
-   OPENAI_API_KEY=your-secret-key
-   OPENAI_MODEL=the-model-supported-by-your-endpoint
+   ATOMS_ADDR=:8080
+   ATOMS_DATA_DIR=./data
+   ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
    ```
 
 2. 安装前端构建依赖：
@@ -39,7 +39,7 @@
    make run
    ```
 
-4. 在浏览器访问 <http://localhost:8080>，输入昵称、创建项目，然后描述一个待办、笔记或习惯打卡应用。
+4. 在浏览器访问 <http://localhost:8080>，输入昵称并在右上角设置自己的 endpoint、model 和 API Key，然后创建项目并描述一个待办、笔记或习惯打卡应用。三项配置仅保存在当前浏览器标签页中。
 
 构建后的 `bin/atoms-demo` 不需要 Node.js 运行。默认数据库位于 `./data/atoms-demo.db`；可使用 `ATOMS_DATA_DIR` 指定其他本地目录，使用 `ATOMS_ADDR` 修改监听地址。
 
@@ -51,13 +51,13 @@ cd web && npm run build
 make build
 ```
 
-测试覆盖规格校验、模型协议回退、SSE、SQLite 隔离、版本恢复和预览状态校验。真实模型调用使用本地 `.env`，不会出现在自动测试中；模型配置不完整时，界面和 API 只会提示缺失变量名，不会返回密钥。
+测试覆盖规格校验、模型协议回退、SSE、SQLite 隔离、版本恢复和预览状态校验。真实模型调用使用用户请求头中的 API Key，不会出现在自动测试中；服务端不会保存或返回 API Key。
 
 ## 安全与范围
 
 模型不能提交任意前端源码。它只能返回 `todo`、`notes` 或 `habits` 的严格规格，Go 编译器使用固定模板生成预览。预览 iframe 使用 `sandbox="allow-scripts"` 和无网络 CSP，运行态只能通过受验证的 `postMessage` 发送回本地 API。
 
-本阶段是本地单用户 Demo：不含真实邮箱注册、公开分享、多设备同步、外部网络请求、登录、支付或任意多页应用。版本数据和预览状态保存在本机 SQLite，删除项目不可恢复。
+当前仍使用匿名 workspace，不含真实邮箱注册、登录恢复、公开分享、多设备同步、支付或任意多页应用。每位用户自行提供模型 endpoint、model 和 API Key；三项配置只在当前标签页和单次生成请求中使用，服务端不保存。服务端默认拒绝私网 endpoint，公开部署时不要打开私网放行开关。版本数据和预览状态保存在服务端 SQLite，删除项目不可恢复；公开部署时需要持久化磁盘或迁移到托管数据库。
 
 ## 项目文档
 

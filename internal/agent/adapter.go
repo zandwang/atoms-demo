@@ -24,6 +24,7 @@ type ErrorCode string
 
 const (
 	ErrorAuth                ErrorCode = "AUTH_ERROR"
+	ErrorEndpointInvalid     ErrorCode = "MODEL_ENDPOINT_INVALID"
 	ErrorUpstreamTimeout     ErrorCode = "UPSTREAM_TIMEOUT"
 	ErrorUpstreamUnavailable ErrorCode = "UPSTREAM_UNAVAILABLE"
 	ErrorModelOutputInvalid  ErrorCode = "MODEL_OUTPUT_INVALID"

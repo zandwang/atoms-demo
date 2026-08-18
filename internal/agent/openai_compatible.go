@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 
@@ -15,24 +16,39 @@ import (
 const maxModelResponseSize = 512 << 10
 
 type OpenAICompatibleAdapter struct {
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
+	baseURL      string
+	apiKey       string
+	model        string
+	allowPrivate bool
+	client       *http.Client
 }
 
 func NewOpenAICompatibleAdapter(baseURL, apiKey, model string) *OpenAICompatibleAdapter {
+	return NewOpenAICompatibleAdapterWithOptions(baseURL, apiKey, model, true)
+}
+
+func NewOpenAICompatibleAdapterWithOptions(baseURL, apiKey, model string, allowPrivate bool) *OpenAICompatibleAdapter {
+	validatedURL, _ := ValidateBaseURL(baseURL)
 	return &OpenAICompatibleAdapter{
-		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		apiKey:  apiKey,
-		model:   model,
-		client:  http.DefaultClient,
+		baseURL:      validatedURL,
+		apiKey:       strings.TrimSpace(apiKey),
+		model:        strings.TrimSpace(model),
+		allowPrivate: allowPrivate,
+		client: &http.Client{Transport: &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+				return safeDialContext(ctx, network, address, allowPrivate)
+			},
+		}},
 	}
 }
 
 func (a *OpenAICompatibleAdapter) Generate(ctx context.Context, input PromptInput) (domain.AgentResult, error) {
 	if a == nil || a.baseURL == "" || a.apiKey == "" || a.model == "" {
 		return domain.AgentResult{}, &Error{Code: ErrorUpstreamUnavailable, Message: "模型服务尚未就绪，请检查本地配置。", Retryable: true}
+	}
+	if err := validateEndpointNetwork(ctx, a.baseURL, a.allowPrivate); err != nil {
+		return domain.AgentResult{}, err
 	}
 	messages, err := buildChatMessages(input)
 	if err != nil {
@@ -101,6 +117,10 @@ func (a *OpenAICompatibleAdapter) request(ctx context.Context, messages []chatMe
 
 	response, err := a.client.Do(request)
 	if err != nil {
+		var adapterError *Error
+		if errors.As(err, &adapterError) {
+			return "", 0, adapterError
+		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", 0, &Error{Code: ErrorUpstreamTimeout, Message: "模型响应超时，请重试。", Retryable: true, Cause: err}
 		}
@@ -113,7 +133,7 @@ func (a *OpenAICompatibleAdapter) request(ctx context.Context, messages []chatMe
 		// upstream bodies can contain provider-specific details.
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxModelResponseSize))
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-			return "", response.StatusCode, &Error{Code: ErrorAuth, Message: "模型服务拒绝了本地凭据，请检查配置后重试。", Retryable: true}
+			return "", response.StatusCode, &Error{Code: ErrorAuth, Message: "模型服务拒绝了这个 API Key，请更新后重试。", Retryable: true}
 		}
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
 			return "", response.StatusCode, &Error{Code: ErrorUpstreamUnavailable, Message: "模型服务暂时不可用，请稍后重试。", Retryable: true}

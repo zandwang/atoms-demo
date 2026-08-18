@@ -16,7 +16,7 @@ import (
 	"github.com/zand/atoms-demo/internal/store/sqlite"
 )
 
-func TestHealthReportsMissingModelConfigurationWithoutSecrets(t *testing.T) {
+func TestHealthReportsBYOKAvailability(t *testing.T) {
 	handler := NewHandler(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	recorder := httptest.NewRecorder()
@@ -33,11 +33,8 @@ func TestHealthReportsMissingModelConfigurationWithoutSecrets(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Data.Model.Configured {
-		t.Fatal("health reported a configured model")
-	}
-	if len(response.Data.Model.Missing) != 3 {
-		t.Fatalf("missing settings = %#v", response.Data.Model.Missing)
+	if !response.Data.Model.Available {
+		t.Fatal("health reported BYOK unavailable")
 	}
 }
 
@@ -50,8 +47,8 @@ func TestGeneratePlaceholderReturnsConfigurationError(t *testing.T) {
 
 	handler.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 
 	var response struct {
@@ -60,8 +57,48 @@ func TestGeneratePlaceholderReturnsConfigurationError(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Error.Code != "CONFIG_ERROR" {
-		t.Fatalf("error code = %q, want CONFIG_ERROR", response.Error.Code)
+	if response.Error.Code != "MODEL_CONFIG_REQUIRED" {
+		t.Fatalf("error code = %q, want MODEL_CONFIG_REQUIRED", response.Error.Code)
+	}
+}
+
+func TestGenerateRequiresUserAPIKey(t *testing.T) {
+	repository, err := sqlite.OpenPath(filepath.Join(t.TempDir(), "atoms-demo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	handler := NewHandler(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), repository)
+	cookie := initializeSession(t, handler, "Zand")
+	projectID := createTestProject(t, handler, cookie, "Needs key")
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/generate", strings.NewReader(`{"userRequest":"做一个待办"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(modelBaseURLHeader, "https://model.example/v1")
+	request.Header.Set(modelNameHeader, "demo-model")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"API_KEY_REQUIRED"`) {
+		t.Fatalf("missing key response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGenerateRejectsInvalidModelEndpoint(t *testing.T) {
+	handler := newTestHandler(t)
+	cookie := initializeSession(t, handler, "Zand")
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/project-1/generate", strings.NewReader(`{"userRequest":"做一个待办"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(modelBaseURLHeader, "https://user:password@example.test/v1")
+	request.Header.Set(modelNameHeader, "demo-model")
+	request.Header.Set(modelAPIKeyHeader, "user-key")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"MODEL_ENDPOINT_INVALID"`) {
+		t.Fatalf("invalid endpoint response = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -296,11 +333,7 @@ func newTestHandlerWithModel(t *testing.T, model agent.ModelAdapter) http.Handle
 			t.Error(err)
 		}
 	})
-	return NewHandlerWithModel(config.Config{
-		OpenAIBaseURL: "https://model.example/v1",
-		OpenAIAPIKey:  "test-key",
-		OpenAIModel:   "test-model",
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)), repository, model)
+	return NewHandlerWithModel(config.Config{}, slog.New(slog.NewTextHandler(io.Discard, nil)), repository, model)
 }
 
 func initializeSession(t *testing.T, handler http.Handler, displayName string) *http.Cookie {

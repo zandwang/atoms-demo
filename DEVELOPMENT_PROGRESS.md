@@ -6,10 +6,10 @@
 
 | 项目 | 状态 | 说明 |
 | --- | --- | --- |
-| 最后更新 | 2026-08-18 | M3/M4 代码闭环完成，进入本地验收准备 |
-| 当前阶段 | M3/M4 集成与 M5 本地验收 | 进行中 |
-| 当前阻塞项 | `.env` 尚缺 endpoint 支持的 `OPENAI_MODEL`，因此尚未执行真实模型联调；`go mod tidy` 的额外测试依赖受外部镜像网络超时影响 | 现有锁定依赖的构建、测试和二进制运行不受影响 |
-| 下一步 | 补充 `OPENAI_MODEL` 后执行一次真实生成、预览交互和刷新/重启验收 | 详见本条目最后的“下次从这里继续” |
+| 最后更新 | 2026-08-18 | BYOK 代码闭环完成，等待在线部署方案确认 |
+| 当前阶段 | M5 多用户公开测试准备 | 进行中 |
+| 当前阻塞项 | 无代码阻塞；仍缺浏览器人工验收和部署平台/持久化数据库决策 | 当前匿名 workspace 与请求级 BYOK 适合小规模测试，不等同于正式账号系统 |
+| 下一步 | 用户在浏览器设置自己的 Key 完成一次真实生成；随后选择部署平台并评估持久化数据库 | Key 不进入 SQLite、Cookie、日志或构建产物 |
 | 本地运行目标 | Go 单二进制 | React 仅为构建期依赖 |
 
 ## 状态标记
@@ -70,7 +70,7 @@
 - [x] 实现 `todo` 模板的 Go 编译器，生成 HTML/CSS/JS artifact。
 - [x] 实现对话时间线、提示词输入、真实阶段反馈、错误和重试交互。
 - [x] 实现受 sandbox 限制的 iframe 预览和代码查看。
-- [ ] 使用真实 API 完成一次“输入 → 待办应用预览”的本地联调（等待 `OPENAI_MODEL`）。
+- [ ] 使用用户提供的 endpoint、model、Key 完成一次“输入 → 待办应用预览”的本地联调。
 
 完成条件：用户可输入需求，看到真实模型结果、可运行待办应用及编译代码；失败不丢失请求且可重试。
 
@@ -95,6 +95,7 @@
 - [x] 覆盖模型超时、无效输出、配置错误、项目归属和预览状态异常。
 - [x] 编写 README：依赖、环境变量、启动、构建、测试、演示步骤和已知限制。
 - [ ] 按 [需求分析计划](./REQUIREMENTS_ANALYSIS_PLAN.md) 的端到端验收场景逐条验收。
+- [x] 将模型认证改为 BYOK：用户 Key 仅在标签页和单次服务端请求内存中存在。
 
 完成条件：所有 P0、选定的 P1（版本历史/回滚）和本地验收场景通过；交付物可由他人依文档启动。
 
@@ -102,7 +103,7 @@
 
 状态：`不做`
 
-原因：用户先验收本地 Demo，再决定部署平台、公开访问和跨设备需求。
+原因：BYOK（含自定义 endpoint/model）已完成，但用户尚未选择部署平台、持久化数据库和匿名 workspace 是否升级为真实账号；当前先完成代码验收。
 
 恢复条件：用户确认要上线后，补充部署平台、域名/访问策略、数据库持久卷和 API Key 注入方案。
 
@@ -147,6 +148,57 @@
 ```
 
 ## 开发日志
+
+### 2026-08-19 — M5 自定义模型 endpoint/model — 已完成
+
+- 完成：
+  - 将 BYOK 从仅用户 API Key 扩展为用户自定义 OpenAI-compatible endpoint、model 和 API Key。
+  - 三项配置仅保存在当前标签页 `sessionStorage`，通过 `X-Model-Base-URL`、`X-Model-Name`、`X-Model-API-Key` 请求头发送。
+  - 增加 endpoint URL 语法校验、DNS 地址策略、默认私网/回环拒绝、禁用代理访问和受信环境显式放行开关。
+- 修改：
+  - `internal/agent/endpoint.go`、`internal/agent/openai_compatible.go` — endpoint 校验、私网防护和请求级 adapter。
+  - `internal/app/generation.go`、`internal/config/`、`cmd/atoms-demo/main.go` — 请求头配置、BYOK 健康状态和私网开关。
+  - `web/src/App.tsx`、`web/src/api/client.ts` — endpoint/model/API Key 配置弹窗、标签页存储和请求头。
+  - `CODE_DESIGN.md`、`README.md`、`.env.example` — 自定义模型配置契约和安全说明。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...` — 通过。
+  - `go mod verify`、`npm run build` — 通过。
+  - endpoint 语法、私网默认拒绝/显式放行和缺少模型配置的测试 — 通过。
+- 未完成或风险：
+  - 真实浏览器自定义 endpoint 联调尚未完成；公开部署时不要启用私网 endpoint 放行。
+  - 匿名 workspace、SQLite 持久化、限流和模型费用控制仍需部署阶段处理。
+- 下次从这里继续：
+  1. 在浏览器填写实际 endpoint、model 和 Key，完成一次真实生成验收。
+  2. 选择部署平台并补充 `PORT`、持久化数据库和公开服务限流方案。
+
+### 2026-08-18 — M5 BYOK 模型认证 — 已完成
+
+- 完成：
+  - 将模型认证从服务端共享 `OPENAI_API_KEY` 改为用户自带 Key（BYOK）。
+  - 前端通过 `sessionStorage` 保存当前标签页的 Key，并在生成 SSE 请求中发送 `X-Model-API-Key`。
+  - Go 服务端固定 `OPENAI_BASE_URL` 和 `OPENAI_MODEL`，按请求临时构造模型 adapter；缺少 Key 返回 `API_KEY_REQUIRED`。
+  - 明确 Key 不写入 SQLite、Cookie、日志、SSE 响应或构建产物，并保留 endpoint/model 固定以避免任意代理与 SSRF 风险。
+- 修改：
+  - `internal/config/`、`internal/app/`、`internal/agent/` — 移除服务端 Key 依赖、增加请求头认证和安全错误映射。
+  - `web/src/App.tsx`、`web/src/api/client.ts` — 增加 Key 设置/清除入口、标签页存储和 SSE 请求头。
+  - `.env.example`、`README.md`、`CODE_DESIGN.md` — 更新 BYOK 配置契约、安全边界和使用说明。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...` — 通过。
+  - `go mod verify` — 通过。
+  - `npm run build`（在 `web/`）— 通过。
+  - `git diff --check`、`.env` 忽略规则检查 — 通过；未记录任何 Key 值。
+- 未完成或风险：
+  - 仍是匿名 workspace；清除 Cookie 后无法恢复工作区，尚未实现真实账号和跨设备登录。
+  - SQLite 线上持久化、单实例约束、限流和模型成本控制需要在部署阶段处理。
+  - React 组件测试、Playwright 主流程和真实浏览器 BYOK 验收仍待补充。
+- 下次从这里继续：
+  1. 在浏览器设置用户自己的 Key，完成一次真实生成并确认刷新/关闭标签页后的 Key 行为。
+  2. 选择 Render/Koyeb/Cloud Run 等部署方式，补充 `PORT`、持久化磁盘或托管数据库方案。
+  3. 若面向更大规模用户，增加真实账号、会话撤销、限流和额度控制。
 
 ### 2026-08-18 — M0 需求与设计 — 已完成
 

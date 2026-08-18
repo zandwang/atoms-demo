@@ -30,12 +30,23 @@ func TestReadEnvFile(t *testing.T) {
 }
 
 func TestModelStatus(t *testing.T) {
-	cfg := Config{OpenAIBaseURL: "https://example.test/v1", OpenAIAPIKey: "key"}
+	cfg := Config{}
 	status := cfg.ModelStatus()
-	if status.Configured {
-		t.Fatal("ModelStatus().Configured = true, want false")
+	if !status.Available {
+		t.Fatal("ModelStatus().Available = false, want true")
 	}
-	if !reflect.DeepEqual(status.Missing, []string{"OPENAI_MODEL"}) {
-		t.Fatalf("ModelStatus().Missing = %#v", status.Missing)
+}
+
+func TestLoadPrivateEndpointFlag(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(filename, []byte("ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowPrivateModelEndpoint {
+		t.Fatal("AllowPrivateModelEndpoint = false, want true")
 	}
 }

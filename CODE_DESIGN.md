@@ -182,16 +182,17 @@ type GenerationVersion struct {
 
 ## 7. 模型与 Agent 生成链路
 
-### 7.1 环境变量契约
+### 7.1 模型配置与环境变量契约
 
 ```dotenv
-OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
-OPENAI_API_KEY=your-secret-key
-OPENAI_MODEL=the-model-supported-by-your-endpoint
 ATOMS_DATA_DIR=./data
+# 仅本地/受信环境需要连接 localhost、私网或内网自部署模型时启用
+ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
 ```
 
-当前 `.env` 已标准化 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。开始 API 联调前补充 `OPENAI_MODEL`。服务端启动时只报告缺少的变量名，绝不输出 URL 中的敏感参数、Key 或认证响应内容。`.env` 不提交；另提供不含真实值的 `.env.example`。
+每位用户在前端自行填写 OpenAI-compatible `endpoint`、`model` 和 `API Key`；三项仅保存在当前标签页的 `sessionStorage`，每次生成时分别通过 `X-Model-Base-URL`、`X-Model-Name`、`X-Model-API-Key` 请求头发送给 Go 服务端。服务端只在该次请求的内存中使用它们，不写入 SQLite、Cookie、日志或响应。关闭标签页后浏览器自动清除配置。
+
+endpoint 必须是绝对 `http`/`https` URL，不能包含 userinfo、query 或 fragment；默认拒绝 localhost、回环、链路本地、私网和保留地址，服务端通过 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=true` 才允许受信本地/内网部署。服务端不使用代理环境变量访问用户 endpoint，以减少绕过地址校验的风险。健康检查只报告服务是否可接受 BYOK 请求，绝不输出 endpoint、请求头或上游认证响应内容。`.env` 不提交；另提供不含真实值的 `.env.example`。
 
 ### 7.2 HTTP API
 
@@ -209,7 +210,7 @@ DELETE /api/projects/{projectID}
 
 GET    /api/projects/{projectID}/messages
 GET    /api/projects/{projectID}/versions
-POST   /api/projects/{projectID}/generate          (SSE)
+POST   /api/projects/{projectID}/generate          (SSE; requires X-Model-Base-URL, X-Model-Name, X-Model-API-Key)
 POST   /api/projects/{projectID}/versions/{versionID}/activate
 
 GET    /api/projects/{projectID}/versions/{versionID}/preview-state
@@ -225,7 +226,7 @@ PUT    /api/projects/{projectID}/versions/{versionID}/preview-state
 失败响应为：
 
 ```json
-{ "data": null, "error": { "code": "CONFIG_ERROR", "message": "…", "retryable": true } }
+{ "data": null, "error": { "code": "MODEL_CONFIG_REQUIRED", "message": "…", "retryable": false } }
 ```
 
 ### 7.3 生成请求与 SSE 协议
@@ -293,7 +294,7 @@ type ModelAdapter interface {
 }
 ```
 
-首版实现 `OpenAICompatibleAdapter`，基于 `net/http` 访问 `${OPENAI_BASE_URL}/chat/completions` 或已配置的兼容端点。它只在 Go 服务端依赖图中存在。
+首版实现 `OpenAICompatibleAdapter`，基于 `net/http` 访问 `${userBaseURL}/chat/completions`。生产 handler 为每次生成读取并校验三个用户请求头，临时构造 adapter，并在请求结束后释放引用；adapter 只在 Go 服务端依赖图中存在。测试 handler 仍可显式注入 fake adapter，且不依赖真实配置。
 
 测试和本地开发使用 `FakeModelAdapter` 注入固定结果，覆盖成功、超范围、非法 JSON、认证失败和超时。fake 仅供测试或明确的开发开关使用，绝不能在真实模型失败后静默地把伪结果伪装为 Agent 输出。
 
@@ -499,8 +500,10 @@ web → HTTP API（不导入 Go 内部实现）
 
 | 错误代码 | 场景 | 用户体验 | 是否可重试 |
 | --- | --- | --- | --- |
-| `CONFIG_ERROR` | 缺失 URL、Key 或 Model | 告知缺少的变量名，不展示值 | 配置后重试 |
-| `AUTH_ERROR` | 上游拒绝凭据 | 提示检查本地 API 凭据 | 配置后重试 |
+| `API_KEY_REQUIRED` | 生成请求未携带用户 Key | 提示用户在当前标签页设置 Key | 设置后重试 |
+| `MODEL_CONFIG_REQUIRED` | 生成请求未携带 endpoint 或 model | 提示补充模型配置 | 设置后重试 |
+| `MODEL_ENDPOINT_INVALID` | endpoint 格式不合法或命中私网限制 | 提示检查 endpoint | 修改后重试 |
+| `AUTH_ERROR` | 上游拒绝用户凭据 | 提示检查用户自己的 API Key | 更新后重试 |
 | `UPSTREAM_TIMEOUT` | 模型超时/网络失败 | 保留请求和项目，提供重试 | 是 |
 | `MODEL_OUTPUT_INVALID` | 结果不符合受控规格 | 告知未生成可用应用 | 是 |
 | `UNSUPPORTED_REQUEST` | 无法映射到三模板 | 解释当前范围并建议改写 | 是 |
@@ -509,7 +512,8 @@ web → HTTP API（不导入 Go 内部实现）
 
 可靠性与安全规则：
 
-- API Key、授权头、Cookie token 和上游原始响应不得写入日志、错误消息或数据库。
+- 用户 endpoint、model、API Key、授权头、Cookie token 和上游原始响应不得写入日志、错误消息或数据库；三项模型配置只允许存在于当前标签页 `sessionStorage` 和单次 Go 请求内存中。
+- 用户 endpoint 必须通过 scheme、userinfo、query、fragment、主机地址和 DNS 解析校验；默认拒绝 loopback、私网、链路本地、未指定和保留地址。允许私网时必须由部署者显式打开 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS`，且不建议在公开服务启用。
 - 模型请求使用 `context.WithTimeoutCause`；错误判断使用 `errors.Is` / `errors.AsType`，保留根因但不向用户暴露敏感细节。
 - 生成 API 限制请求体、字符串长度、会话上下文数量和并发数；同一 session 同时只允许一个运行中的生成。
 - 所有数据库写入使用参数化查询；所有归属查询都绑定 workspace ID。
@@ -551,7 +555,7 @@ web → HTTP API（不导入 Go 内部实现）
 | 5. 版本与运行态 | 版本历史、回滚、iframe 状态桥接 | 刷新、重启、回滚后数据一致 |
 | 6. 打磨与测试 | 响应式界面、Go/前端测试、README、验收脚本 | P0/P1 用例全部通过，`make build` 产出单二进制 |
 
-应在阶段 3 完成后立即做一次真实 API 联调，确认 `OPENAI_MODEL` 和兼容接口能力，而不是在所有 UI 完成后才发现配置问题。
+应在阶段 3 完成后立即做一次真实 API 联调，确认用户提供的 endpoint、model、Key 和兼容接口能力，而不是在所有 UI 完成后才发现配置问题。
 
 ## 14. 需求追踪
 
@@ -571,7 +575,7 @@ web → HTTP API（不导入 Go 内部实现）
 - [x] 需求范围、非目标和本地交付边界已确认。
 - [x] Go 后端、React 前端构建/嵌入及单二进制运行方式已确认。
 - [x] 数据所有权、SQLite schema、会话与版本策略已定义。
-- [x] 模型密钥边界、生成规格、编译器和预览隔离已定义。
+- [x] BYOK endpoint/model/API Key 边界、生成规格、编译器和预览隔离已定义。
 - [x] HTTP API、SSE、错误码和测试路径已定义。
 - [x] 初始化 `go.mod`、`web/`、`.env.example`、`.gitignore`、migrations 和基础脚本。
-- [ ] 补充 `OPENAI_MODEL` 并完成一次真实 API 最短链路联调。
+- [ ] 使用用户自行提供的 Key 完成一次真实 API 最短链路联调。

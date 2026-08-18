@@ -6,6 +6,7 @@ import {
   type GenerationVersion,
   type Health,
   type Message,
+  type ModelConfig,
   type Project,
   type Workspace,
   activateVersion,
@@ -35,6 +36,8 @@ type GenerationState =
   | { kind: "failed"; projectID: string; message: string; retryable: boolean };
 type PreviewTab = "preview" | "code" | "spec";
 
+const modelConfigStorageKey = "atoms_demo_model_config";
+
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapState>("loading");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -47,6 +50,7 @@ export function App() {
   const [generation, setGeneration] = useState<GenerationState>({ kind: "idle" });
   const [activatingVersionID, setActivatingVersionID] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [modelConfig, setModelConfig] = useState<ModelConfig>(() => readModelConfig());
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectID) ?? null,
@@ -207,7 +211,7 @@ export function App() {
     setGeneration({ kind: "running", projectID: project.id, status: "requesting_model", label: "正在请求模型…" });
     let receivedResult = false;
     try {
-      await generateProject(project.id, userRequest, (event: GenerationEvent) => {
+      await generateProject(project.id, userRequest, modelConfig, (event: GenerationEvent) => {
         if (event.type === "stage") {
           setGeneration({ kind: "running", projectID: project.id, status: event.status, label: event.label });
           return;
@@ -229,6 +233,24 @@ export function App() {
       setGeneration({ kind: "failed", projectID: project.id, message, retryable });
       await refreshProjectData(project.id).catch(() => undefined);
       throw error;
+    }
+  }
+
+  function handleModelConfigChange(nextConfig: ModelConfig) {
+    const normalized = {
+      baseURL: nextConfig.baseURL.trim(),
+      model: nextConfig.model.trim(),
+      apiKey: nextConfig.apiKey.trim()
+    };
+    setModelConfig(normalized);
+    try {
+      if (normalized.baseURL || normalized.model || normalized.apiKey) {
+        window.sessionStorage.setItem(modelConfigStorageKey, JSON.stringify(normalized));
+      } else {
+        window.sessionStorage.removeItem(modelConfigStorageKey);
+      }
+    } catch {
+      // Storage can be disabled by the browser; the in-memory value still works.
     }
   }
 
@@ -262,9 +284,12 @@ export function App() {
   return (
     <main className="min-h-screen bg-[#08080c] text-zinc-100">
       <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col px-4 py-4 sm:px-5 lg:px-8 lg:py-5">
-        <header className="flex items-center justify-between gap-4 border-b border-white/10 pb-4 sm:pb-5">
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4 sm:pb-5">
           <Brand workspace={workspace} />
-          <HealthBadge health={health} />
+          <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">
+            <ModelConfigControl config={modelConfig} configured={modelConfig.baseURL !== "" && modelConfig.model !== "" && modelConfig.apiKey !== ""} onSave={handleModelConfigChange} />
+            <HealthBadge health={health} />
+          </div>
         </header>
         {notice ? <p className="mt-4 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.07] px-3 py-2 text-sm text-emerald-100">{notice}</p> : null}
 
@@ -278,6 +303,7 @@ export function App() {
           <WorkspacePanel
             generation={generation}
             health={health}
+            modelConfigConfigured={modelConfig.baseURL !== "" && modelConfig.model !== "" && modelConfig.apiKey !== ""}
             messages={messages}
             onDelete={handleDeleteProject}
             onGenerate={handleGenerate}
@@ -431,6 +457,7 @@ function WorkspacePanel({
   version,
   generation,
   health,
+  modelConfigConfigured,
   projectDataState,
   onRename,
   onDelete,
@@ -441,6 +468,7 @@ function WorkspacePanel({
   version: GenerationVersion | null;
   generation: GenerationState;
   health: HealthState;
+  modelConfigConfigured: boolean;
   projectDataState: ProjectDataState;
   onRename: (project: Project) => Promise<void>;
   onDelete: (project: Project) => Promise<void>;
@@ -460,7 +488,8 @@ function WorkspacePanel({
 
   const isGenerating = generation.kind === "running" && generation.projectID === project.id;
   const generationFailure = generation.kind === "failed" && generation.projectID === project.id ? generation : null;
-  const modelReady = health.kind === "ready" && health.value.model.configured;
+  const providerReady = health.kind === "ready" && health.value.model.available;
+  const modelReady = providerReady && modelConfigConfigured;
 
   return (
     <section className="flex min-h-[600px] flex-col rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -482,7 +511,8 @@ function WorkspacePanel({
       {version ? <PlanCard version={version} /> : null}
       <MessageTimeline messages={messages} />
       <PromptComposer disabled={!modelReady || isGenerating} failure={generationFailure} onGenerate={(request) => onGenerate(project, request)} />
-      {!modelReady ? <p className="mt-3 text-xs leading-5 text-amber-100/80">模型配置尚未完成。补充缺失的环境变量并重启服务后，即可开始真实生成。</p> : null}
+      {!providerReady ? <p className="mt-3 text-xs leading-5 text-amber-100/80">服务端模型 endpoint 尚未配置，请联系部署者。</p> : null}
+      {providerReady && !modelConfigConfigured ? <p className="mt-3 text-xs leading-5 text-amber-100/80">请先在页面右上角设置模型 endpoint、model 和 API Key。</p> : null}
     </section>
   );
 }
@@ -794,10 +824,103 @@ function HealthBadge({ health }: { health: HealthState }) {
   if (health.kind === "error") {
     return <span className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-xs text-rose-200">Server unavailable</span>;
   }
-  if (health.value.model.configured) {
-    return <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200">Model configured</span>;
+  if (health.value.model.available) {
+    return <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200">BYOK ready</span>;
   }
-  return <span className="max-w-[52vw] truncate rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100">Missing: {health.value.model.missing.join(", ")}</span>;
+  return <span className="max-w-[52vw] truncate rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100">Model unavailable</span>;
+}
+
+function ModelConfigControl({ config, configured, onSave }: { config: ModelConfig; configured: boolean; onSave: (value: ModelConfig) => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState<ModelConfig>(config);
+
+  function show() {
+    setValue(config);
+    setOpen(true);
+  }
+
+  function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    onSave(value);
+    setOpen(false);
+  }
+
+  return (
+    <>
+      <button
+        className={`rounded-full border px-3 py-1.5 text-xs transition ${configured ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/15" : "border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/15"}`}
+        onClick={show}
+        type="button"
+      >
+        {configured ? "模型配置已设置" : "设置模型配置"}
+      </button>
+      {open ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
+          <section aria-labelledby="model-config-title" aria-modal="true" className="w-full max-w-md rounded-2xl border border-white/10 bg-[#15151d] p-5 shadow-2xl shadow-black/50" role="dialog">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-base font-semibold text-zinc-100" id="model-config-title">模型配置</h2>
+                <p className="mt-1 text-xs text-zinc-500">当前标签页保存 · 关闭标签页后清除</p>
+              </div>
+              <button aria-label="关闭" className="text-zinc-500 hover:text-zinc-200" onClick={() => setOpen(false)} type="button">×</button>
+            </div>
+            <form className="mt-5" onSubmit={save}>
+              <label className="text-sm font-medium text-zinc-200" htmlFor="model-base-url">Endpoint</label>
+              <input
+                autoComplete="off"
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-3 font-mono text-sm outline-none placeholder:text-zinc-700 focus:border-violet-400"
+                id="model-base-url"
+                onChange={(event) => setValue((current) => ({ ...current, baseURL: event.target.value }))}
+                placeholder="https://provider.example/v1"
+                type="url"
+                value={value.baseURL}
+              />
+              <label className="mt-4 block text-sm font-medium text-zinc-200" htmlFor="model-name">Model</label>
+              <input
+                autoComplete="off"
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-3 font-mono text-sm outline-none placeholder:text-zinc-700 focus:border-violet-400"
+                id="model-name"
+                onChange={(event) => setValue((current) => ({ ...current, model: event.target.value }))}
+                placeholder="模型名称"
+                value={value.model}
+              />
+              <label className="mt-4 block text-sm font-medium text-zinc-200" htmlFor="model-api-key">API Key</label>
+              <input
+                autoComplete="off"
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-3 font-mono text-sm outline-none placeholder:text-zinc-700 focus:border-violet-400"
+                id="model-api-key"
+                onChange={(event) => setValue((current) => ({ ...current, apiKey: event.target.value }))}
+                placeholder="粘贴你的 API Key"
+                spellCheck={false}
+                type="password"
+                value={value.apiKey}
+              />
+              <div className="mt-4 flex justify-end gap-2">
+                <button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-white/[0.05]" onClick={() => { onSave({ baseURL: "", model: "", apiKey: "" }); setOpen(false); }} type="button">清除</button>
+                <button className="rounded-lg bg-violet-500 px-4 py-2 text-sm font-medium text-white hover:bg-violet-400" type="submit">保存</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function readModelConfig(): ModelConfig {
+  const empty: ModelConfig = { baseURL: "", model: "", apiKey: "" };
+  try {
+    const raw = window.sessionStorage.getItem(modelConfigStorageKey);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as Partial<ModelConfig>;
+    return {
+      baseURL: typeof parsed.baseURL === "string" ? parsed.baseURL.trim() : "",
+      model: typeof parsed.model === "string" ? parsed.model.trim() : "",
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey.trim() : ""
+    };
+  } catch {
+    return empty;
+  }
 }
 
 function messageLabel(role: Message["role"]) {

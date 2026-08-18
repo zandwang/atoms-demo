@@ -15,7 +15,15 @@ import (
 	"github.com/zand/atoms-demo/internal/domain"
 )
 
-const generationTimeout = 45 * time.Second
+const (
+	generationTimeout     = 45 * time.Second
+	modelBaseURLHeader    = "X-Model-Base-URL"
+	modelNameHeader       = "X-Model-Name"
+	modelAPIKeyHeader     = "X-Model-API-Key"
+	maxModelBaseURLLength = 2048
+	maxModelNameLength    = 256
+	maxModelAPIKeyLength  = 4096
+)
 
 type generateRequest struct {
 	UserRequest string `json:"userRequest"`
@@ -38,20 +46,29 @@ type generationErrorEvent struct {
 }
 
 func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace domain.Workspace) {
-	modelStatus := s.config.ModelStatus()
-	if !modelStatus.Configured {
-		writeError(
-			w,
-			http.StatusServiceUnavailable,
-			"CONFIG_ERROR",
-			"模型服务尚未配置，请设置: "+strings.Join(modelStatus.Missing, ", "),
-			true,
-		)
-		return
-	}
-	if s.model == nil {
-		writeError(w, http.StatusServiceUnavailable, "CONFIG_ERROR", "模型服务尚未就绪，请重试。", true)
-		return
+	model := s.model
+	if model == nil {
+		baseURL := strings.TrimSpace(r.Header.Get(modelBaseURLHeader))
+		modelName := strings.TrimSpace(r.Header.Get(modelNameHeader))
+		apiKey := strings.TrimSpace(r.Header.Get(modelAPIKeyHeader))
+		if baseURL == "" || modelName == "" {
+			writeError(w, http.StatusBadRequest, "MODEL_CONFIG_REQUIRED", "请先设置模型 endpoint 和 model。", false)
+			return
+		}
+		if apiKey == "" {
+			writeError(w, http.StatusBadRequest, "API_KEY_REQUIRED", "请先设置你自己的模型 API Key。", false)
+			return
+		}
+		if len(baseURL) > maxModelBaseURLLength || len(modelName) > maxModelNameLength || len(apiKey) > maxModelAPIKeyLength {
+			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "模型配置格式无效。", false)
+			return
+		}
+		validatedURL, err := agent.ValidateBaseURL(baseURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, string(agent.ErrorEndpointInvalid), "模型 endpoint 无效，请检查地址后重试。", false)
+			return
+		}
+		model = agent.NewOpenAICompatibleAdapterWithOptions(validatedURL, apiKey, modelName, s.config.AllowPrivateModelEndpoint)
 	}
 
 	var request generateRequest
@@ -100,7 +117,7 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 	}
 	modelContext, cancel := context.WithTimeoutCause(r.Context(), generationTimeout, errors.New("model generation timed out"))
 	defer cancel()
-	result, err := s.model.Generate(modelContext, agent.PromptInput{
+	result, err := model.Generate(modelContext, agent.PromptInput{
 		ProjectName:    project.Name,
 		UserRequest:    userRequest,
 		CurrentSpec:    currentSpec(currentVersion),

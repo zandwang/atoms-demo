@@ -33,11 +33,7 @@ type server struct {
 
 // NewHandler builds the HTTP surface for local sessions, projects, and later generation work.
 func NewHandler(cfg config.Config, logger *slog.Logger, repository store.Repository) http.Handler {
-	var model agent.ModelAdapter
-	if cfg.ModelStatus().Configured {
-		model = agent.NewOpenAICompatibleAdapter(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.OpenAIModel)
-	}
-	return NewHandlerWithModel(cfg, logger, repository, model)
+	return NewHandlerWithModel(cfg, logger, repository, nil)
 }
 
 // NewHandlerWithModel is the composition point used by tests to supply an

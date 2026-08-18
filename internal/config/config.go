@@ -16,17 +16,14 @@ const (
 
 // Config contains only runtime settings. Secret values must never be logged or returned to clients.
 type Config struct {
-	Address       string
-	DataDir       string
-	OpenAIBaseURL string
-	OpenAIAPIKey  string
-	OpenAIModel   string
+	Address                   string
+	DataDir                   string
+	AllowPrivateModelEndpoint bool
 }
 
 // ModelStatus is safe to expose through health and diagnostics endpoints.
 type ModelStatus struct {
-	Configured bool     `json:"configured"`
-	Missing    []string `json:"missing,omitzero"`
+	Available bool `json:"available"`
 }
 
 // Load reads a local dotenv file when present. Values already present in the process environment take precedence.
@@ -44,31 +41,20 @@ func Load(envFile string) (Config, error) {
 	}
 
 	return Config{
-		Address:       valueOrDefault(lookup("ATOMS_ADDR"), defaultAddress),
-		DataDir:       valueOrDefault(lookup("ATOMS_DATA_DIR"), defaultDataDir),
-		OpenAIBaseURL: strings.TrimSpace(lookup("OPENAI_BASE_URL")),
-		OpenAIAPIKey:  strings.TrimSpace(lookup("OPENAI_API_KEY")),
-		OpenAIModel:   strings.TrimSpace(lookup("OPENAI_MODEL")),
+		Address:                   valueOrDefault(lookup("ATOMS_ADDR"), defaultAddress),
+		DataDir:                   valueOrDefault(lookup("ATOMS_DATA_DIR"), defaultDataDir),
+		AllowPrivateModelEndpoint: parseBool(lookup("ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS")),
 	}, nil
 }
 
-// ModelStatus intentionally contains variable names only, never values.
+// ModelStatus reports whether the server supports request-scoped BYOK settings.
 func (c Config) ModelStatus() ModelStatus {
-	missing := make([]string, 0, 3)
-	if c.OpenAIBaseURL == "" {
-		missing = append(missing, "OPENAI_BASE_URL")
-	}
-	if c.OpenAIAPIKey == "" {
-		missing = append(missing, "OPENAI_API_KEY")
-	}
-	if c.OpenAIModel == "" {
-		missing = append(missing, "OPENAI_MODEL")
-	}
+	return ModelStatus{Available: true}
+}
 
-	return ModelStatus{
-		Configured: len(missing) == 0,
-		Missing:    missing,
-	}
+func parseBool(value string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && parsed
 }
 
 func valueOrDefault(value, fallback string) string {

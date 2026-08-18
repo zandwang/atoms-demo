@@ -15,8 +15,13 @@ export type Project = {
 };
 
 export type ModelStatus = {
-  configured: boolean;
-  missing: string[];
+  available: boolean;
+};
+
+export type ModelConfig = {
+  baseURL: string;
+  model: string;
+  apiKey: string;
 };
 
 export type Health = {
@@ -251,11 +256,22 @@ export function savePreviewState(projectID: string, versionID: string, state: un
 export async function generateProject(
   projectID: string,
   userRequest: string,
+  modelConfig: ModelConfig,
   onEvent: (event: GenerationEvent) => void
 ) {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (modelConfig.baseURL.trim()) {
+    headers["X-Model-Base-URL"] = modelConfig.baseURL.trim();
+  }
+  if (modelConfig.model.trim()) {
+    headers["X-Model-Name"] = modelConfig.model.trim();
+  }
+  if (modelConfig.apiKey.trim()) {
+    headers["X-Model-API-Key"] = modelConfig.apiKey.trim();
+  }
   const response = await fetch(`/api/projects/${encodeURIComponent(projectID)}/generate`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ userRequest })
   });
 

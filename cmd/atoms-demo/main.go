@@ -28,8 +28,8 @@ func main() {
 	logger.Info(
 		"starting atoms demo",
 		"address", cfg.Address,
-		"model_configured", modelStatus.Configured,
-		"missing_model_settings", modelStatus.Missing,
+		"byok_available", modelStatus.Available,
+		"private_model_endpoints_allowed", cfg.AllowPrivateModelEndpoint,
 	)
 
 	repository, err := sqlite.Open(cfg.DataDir)
