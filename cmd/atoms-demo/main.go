@@ -29,6 +29,7 @@ func main() {
 		"starting atoms demo",
 		"address", cfg.Address,
 		"byok_available", modelStatus.Available,
+		"model_timeout", cfg.GenerationTimeout(),
 		"private_model_endpoints_allowed", cfg.AllowPrivateModelEndpoint,
 	)
 

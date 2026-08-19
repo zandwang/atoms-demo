@@ -7,17 +7,22 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
-	defaultAddress = ":8080"
-	defaultDataDir = "./data"
+	defaultAddress      = ":8080"
+	defaultDataDir      = "./data"
+	defaultModelTimeout = 120 * time.Second
+	minModelTimeout     = 10 * time.Second
+	maxModelTimeout     = 10 * time.Minute
 )
 
 // Config contains only runtime settings. Secret values must never be logged or returned to clients.
 type Config struct {
 	Address                   string
 	DataDir                   string
+	ModelTimeout              time.Duration
 	AllowPrivateModelEndpoint bool
 }
 
@@ -40,11 +45,41 @@ func Load(envFile string) (Config, error) {
 		return fileValues[key]
 	}
 
+	modelTimeout, err := modelTimeoutFromEnv(lookup("ATOMS_MODEL_TIMEOUT"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Address:                   addressFromEnv(lookup),
 		DataDir:                   valueOrDefault(lookup("ATOMS_DATA_DIR"), defaultDataDir),
+		ModelTimeout:              modelTimeout,
 		AllowPrivateModelEndpoint: parseBool(lookup("ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS")),
 	}, nil
+}
+
+// GenerationTimeout returns a usable model deadline for loaded config and
+// zero-value Config instances used by tests and explicit embeddings.
+func (c Config) GenerationTimeout() time.Duration {
+	if c.ModelTimeout <= 0 {
+		return defaultModelTimeout
+	}
+	return c.ModelTimeout
+}
+
+func modelTimeoutFromEnv(value string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultModelTimeout, nil
+	}
+	duration, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("ATOMS_MODEL_TIMEOUT must be a duration such as 120s or 2m: %w", err)
+	}
+	if duration < minModelTimeout || duration > maxModelTimeout {
+		return 0, fmt.Errorf("ATOMS_MODEL_TIMEOUT must be between %s and %s", minModelTimeout, maxModelTimeout)
+	}
+	return duration, nil
 }
 
 func addressFromEnv(lookup func(string) string) string {

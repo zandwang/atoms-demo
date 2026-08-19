@@ -523,7 +523,10 @@ func scanGenerationVersion(row rowScanner) (domain.GenerationVersion, error) {
 }
 
 func validateArtifact(artifact domain.CompiledArtifact, template domain.AppTemplate) error {
-	if artifact.EntryHTML == "" || artifact.HTML == "" || artifact.CSS == "" || artifact.JS == "" {
+	if artifact.EntryHTML == "" || artifact.HTML == "" {
+		return errors.New("compiled artifact is incomplete")
+	}
+	if template != domain.TemplateCustom && (artifact.CSS == "" || artifact.JS == "") {
 		return errors.New("compiled artifact is incomplete")
 	}
 	if artifact.Manifest.Template != template || artifact.Manifest.Checksum == "" {

@@ -30,6 +30,9 @@ const (
 	maxNoteContent        = 800
 	maxHabitItems         = 12
 	maxHabitName          = 80
+	maxGeneratedHTML      = 60 << 10
+	maxGeneratedCSS       = 60 << 10
+	maxGeneratedJS        = 100 << 10
 )
 
 var (
@@ -46,7 +49,59 @@ const (
 	TemplateTodo   AppTemplate = "todo"
 	TemplateNotes  AppTemplate = "notes"
 	TemplateHabits AppTemplate = "habits"
+	TemplateCustom AppTemplate = "custom"
 )
+
+// GeneratedFiles is the constrained source bundle for a generic small SPA.
+// It deliberately has only three files and no arbitrary asset/dependency graph.
+type GeneratedFiles struct {
+	HTML string `json:"indexHtml"`
+	CSS  string `json:"stylesCss"`
+	JS   string `json:"appJs"`
+}
+
+func (f *GeneratedFiles) NormalizeAndValidate() error {
+	if f == nil {
+		return fmt.Errorf("%w: missing generated files", ErrInvalidAppSpec)
+	}
+	var err error
+	if f.HTML, err = normalizeSource(f.HTML, maxGeneratedHTML, true); err != nil {
+		return fmt.Errorf("%w: indexHtml %v", ErrInvalidAppSpec, err)
+	}
+	if f.CSS, err = normalizeSource(f.CSS, maxGeneratedCSS, false); err != nil {
+		return fmt.Errorf("%w: stylesCss %v", ErrInvalidAppSpec, err)
+	}
+	if f.JS, err = normalizeSource(f.JS, maxGeneratedJS, false); err != nil {
+		return fmt.Errorf("%w: appJs %v", ErrInvalidAppSpec, err)
+	}
+	combined := strings.ToLower(f.HTML + "\n" + f.CSS + "\n" + f.JS)
+	for _, forbidden := range []string{"<script src=", "<link ", "@import", "fetch(", "fetch (", "websocket", "serviceworker", "navigator.sendbeacon", "document.cookie", "window.top", "window.parent.location", "location.href =", "javascript:"} {
+		if strings.Contains(combined, forbidden) {
+			return fmt.Errorf("%w: generated source contains forbidden capability %q", ErrInvalidAppSpec, forbidden)
+		}
+	}
+	if strings.Contains(strings.ToLower(f.HTML), "<script") || strings.Contains(strings.ToLower(f.HTML), "<link") || strings.Contains(strings.ToLower(f.HTML), "<iframe") {
+		return fmt.Errorf("%w: indexHtml must contain interface markup only", ErrInvalidAppSpec)
+	}
+	if strings.Contains(strings.ToLower(f.CSS), "</style") || strings.Contains(strings.ToLower(f.JS), "</script") {
+		return fmt.Errorf("%w: generated source can escape its inline container", ErrInvalidAppSpec)
+	}
+	return nil
+}
+
+func normalizeSource(value string, maximum int, required bool) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if required && trimmed == "" {
+		return "", errors.New("must not be empty")
+	}
+	if len(trimmed) > maximum {
+		return "", fmt.Errorf("must contain at most %d bytes", maximum)
+	}
+	if strings.ContainsRune(trimmed, '\x00') {
+		return "", errors.New("must not contain NUL characters")
+	}
+	return trimmed, nil
+}
 
 type TodoTheme string
 
@@ -128,6 +183,7 @@ type HabitSeedItem struct {
 // AppSpec is a discriminated union. Its custom JSON codec keeps the external
 // representation flat while preventing callers from supplying arbitrary maps.
 type AppSpec struct {
+	Files  *GeneratedFiles
 	Todo   *TodoSpec
 	Notes  *NotesSpec
 	Habits *HabitsSpec
@@ -135,6 +191,8 @@ type AppSpec struct {
 
 func (s AppSpec) TemplateName() AppTemplate {
 	switch {
+	case s.Files != nil:
+		return TemplateCustom
 	case s.Todo != nil:
 		return s.Todo.Template
 	case s.Notes != nil:
@@ -148,19 +206,29 @@ func (s AppSpec) TemplateName() AppTemplate {
 
 func (s AppSpec) MarshalJSON() ([]byte, error) {
 	switch {
-	case s.Todo != nil && s.Notes == nil && s.Habits == nil:
+	case s.Files != nil && s.Todo == nil && s.Notes == nil && s.Habits == nil:
+		copy := *s.Files
+		if err := copy.NormalizeAndValidate(); err != nil {
+			return nil, err
+		}
+		return json.Marshal(struct {
+			SchemaVersion int            `json:"schemaVersion"`
+			Template      AppTemplate    `json:"template"`
+			Files         GeneratedFiles `json:"files"`
+		}{1, TemplateCustom, copy})
+	case s.Files == nil && s.Todo != nil && s.Notes == nil && s.Habits == nil:
 		copy := *s.Todo
 		if err := copy.NormalizeAndValidate(); err != nil {
 			return nil, err
 		}
 		return json.Marshal(copy)
-	case s.Notes != nil && s.Todo == nil && s.Habits == nil:
+	case s.Files == nil && s.Notes != nil && s.Todo == nil && s.Habits == nil:
 		copy := *s.Notes
 		if err := copy.NormalizeAndValidate(); err != nil {
 			return nil, err
 		}
 		return json.Marshal(copy)
-	case s.Habits != nil && s.Todo == nil && s.Notes == nil:
+	case s.Files == nil && s.Habits != nil && s.Todo == nil && s.Notes == nil:
 		copy := *s.Habits
 		if err := copy.NormalizeAndValidate(); err != nil {
 			return nil, err
@@ -185,11 +253,13 @@ func (s *AppSpec) NormalizeAndValidate() error {
 		return fmt.Errorf("%w: missing application specification", ErrInvalidAppSpec)
 	}
 	switch {
-	case s.Todo != nil && s.Notes == nil && s.Habits == nil:
+	case s.Files != nil && s.Todo == nil && s.Notes == nil && s.Habits == nil:
+		return s.Files.NormalizeAndValidate()
+	case s.Files == nil && s.Todo != nil && s.Notes == nil && s.Habits == nil:
 		return s.Todo.NormalizeAndValidate()
-	case s.Notes != nil && s.Todo == nil && s.Habits == nil:
+	case s.Files == nil && s.Notes != nil && s.Todo == nil && s.Habits == nil:
 		return s.Notes.NormalizeAndValidate()
-	case s.Habits != nil && s.Todo == nil && s.Notes == nil:
+	case s.Files == nil && s.Habits != nil && s.Todo == nil && s.Notes == nil:
 		return s.Habits.NormalizeAndValidate()
 	default:
 		return fmt.Errorf("%w: exactly one application specification is required", ErrInvalidAppSpec)
@@ -204,6 +274,23 @@ func ParseAppSpec(data []byte) (AppSpec, error) {
 		return AppSpec{}, fmt.Errorf("%w: decode template discriminator: %v", ErrInvalidAppSpec, err)
 	}
 
+	if discriminant.Template == TemplateCustom {
+		var parsed struct {
+			SchemaVersion int            `json:"schemaVersion"`
+			Template      AppTemplate    `json:"template"`
+			Files         GeneratedFiles `json:"files"`
+		}
+		if err := decodeStrictJSON(data, &parsed); err != nil {
+			return AppSpec{}, fmt.Errorf("%w: decode generated files: %v", ErrInvalidAppSpec, err)
+		}
+		if parsed.SchemaVersion != 1 || parsed.Template != TemplateCustom {
+			return AppSpec{}, fmt.Errorf("%w: invalid generated files schema", ErrInvalidAppSpec)
+		}
+		if err := parsed.Files.NormalizeAndValidate(); err != nil {
+			return AppSpec{}, err
+		}
+		return AppSpec{Files: &parsed.Files}, nil
+	}
 	switch discriminant.Template {
 	case TemplateTodo:
 		var todo TodoSpec
@@ -441,7 +528,7 @@ func isHabitIcon(icon HabitIcon) bool {
 type AgentPlan struct {
 	Summary          string      `json:"summary"`
 	Steps            []string    `json:"steps"`
-	SelectedTemplate AppTemplate `json:"selectedTemplate"`
+	SelectedTemplate AppTemplate `json:"selectedTemplate,omitzero"`
 }
 
 func (p *AgentPlan) NormalizeAndValidate(template AppTemplate) error {
@@ -462,7 +549,7 @@ func (p *AgentPlan) NormalizeAndValidate(template AppTemplate) error {
 		}
 		p.Steps[index] = normalized
 	}
-	if p.SelectedTemplate != template {
+	if p.SelectedTemplate != "" && p.SelectedTemplate != template {
 		return fmt.Errorf("%w: selectedTemplate %q does not match appSpec", ErrInvalidAgentResult, p.SelectedTemplate)
 	}
 	return nil
@@ -575,8 +662,8 @@ type HabitPreviewItem struct {
 	CompletedDates []string  `json:"completedDates"`
 }
 
-// NormalizePreviewState accepts only the small, template-specific state that
-// an iframe can publish. It returns normalized JSON ready for SQLite storage.
+// NormalizePreviewState accepts only a small JSON object for generated apps,
+// while retaining stricter schemas for legacy template versions.
 func NormalizePreviewState(spec AppSpec, raw json.RawMessage) (json.RawMessage, error) {
 	if err := spec.NormalizeAndValidate(); err != nil {
 		return nil, err
@@ -587,6 +674,12 @@ func NormalizePreviewState(spec AppSpec, raw json.RawMessage) (json.RawMessage, 
 	}
 
 	switch spec.TemplateName() {
+	case TemplateCustom:
+		var state map[string]any
+		if err := decodeStrictJSON(trimmed, &state); err != nil || state == nil {
+			return nil, fmt.Errorf("%w: generic state must be a JSON object", ErrInvalidPreviewState)
+		}
+		return json.Marshal(state)
 	case TemplateTodo:
 		var state TodoPreviewState
 		if err := decodeStrictJSON(trimmed, &state); err != nil {

@@ -3,8 +3,17 @@ package domain
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
+
+func validGeneratedFiles() GeneratedFiles {
+	return GeneratedFiles{
+		HTML: `<main><h1>番茄钟</h1><output id="timer">25:00</output><button id="start">开始</button></main>`,
+		CSS:  `body { font-family: sans-serif; } output { display: block; font-size: 3rem; }`,
+		JS:   `const timer = document.getElementById("timer"); document.getElementById("start").addEventListener("click", () => { timer.textContent = "24:59"; window.atomsPreview.publish({remaining: 1499}); });`,
+	}
+}
 
 func validTodoSpec() TodoSpec {
 	return TodoSpec{
@@ -21,19 +30,18 @@ func validTodoSpec() TodoSpec {
 }
 
 func validAgentResult() AgentResult {
-	todo := validTodoSpec()
+	files := validGeneratedFiles()
 	return AgentResult{
 		Plan: AgentPlan{
-			Summary:          "创建一个清晰的双分类待办清单。",
-			Steps:            []string{"设置工作与生活分类", "加入一项初始待办"},
-			SelectedTemplate: TemplateTodo,
+			Summary: "创建一个可操作的番茄钟。",
+			Steps:   []string{"构建计时器界面", "加入开始与状态保存逻辑"},
 		},
-		AssistantMessage: "已为你准备好待办清单，可以继续添加任务。",
-		Spec:             AppSpec{Todo: &todo},
+		AssistantMessage: "已生成番茄钟，可以继续调整时长和样式。",
+		Spec:             AppSpec{Files: &files},
 	}
 }
 
-func TestParseAgentResultAcceptsStrictTodoSpec(t *testing.T) {
+func TestParseAgentResultAcceptsStrictGeneratedFiles(t *testing.T) {
 	want := validAgentResult()
 	encoded, err := json.Marshal(want)
 	if err != nil {
@@ -44,8 +52,38 @@ func TestParseAgentResultAcceptsStrictTodoSpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.TemplateName() != TemplateTodo || got.Spec.Todo.Title != want.Spec.Todo.Title {
+	if got.Spec.TemplateName() != TemplateCustom || got.Spec.Files.HTML != want.Spec.Files.HTML {
 		t.Fatalf("parsed result = %#v", got)
+	}
+}
+
+func TestParseGeneratedFilesRejectsUnknownUnsafeOversizedAndMixedSpecs(t *testing.T) {
+	valid := `{"schemaVersion":1,"template":"custom","files":{"indexHtml":"<main>Timer</main>","stylesCss":"body {}","appJs":"const ready = true;"}}`
+	if _, err := ParseAppSpec([]byte(valid)); err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{
+		`{"schemaVersion":1,"template":"custom","files":{"indexHtml":"<main>Timer</main>","stylesCss":"","appJs":"","extra":true}}`,
+		`{"schemaVersion":1,"template":"custom","files":{"indexHtml":"<script>alert(1)</script>","stylesCss":"","appJs":""}}`,
+		`{"schemaVersion":1,"template":"custom","files":{"indexHtml":"<main>Timer</main>","stylesCss":"","appJs":"fetch('/api')"}}`,
+	} {
+		if _, err := ParseAppSpec([]byte(payload)); !errors.Is(err, ErrInvalidAppSpec) {
+			t.Fatalf("ParseAppSpec(%s) error = %v, want ErrInvalidAppSpec", payload, err)
+		}
+	}
+
+	oversized := GeneratedFiles{HTML: `<main>` + strings.Repeat("x", maxGeneratedHTML) + `</main>`}
+	if err := oversized.NormalizeAndValidate(); !errors.Is(err, ErrInvalidAppSpec) {
+		t.Fatalf("oversized source error = %v, want ErrInvalidAppSpec", err)
+	}
+	todo := validTodoSpec()
+	files := validGeneratedFiles()
+	mixed := AppSpec{Files: &files, Todo: &todo}
+	if err := mixed.NormalizeAndValidate(); !errors.Is(err, ErrInvalidAppSpec) {
+		t.Fatalf("mixed spec error = %v, want ErrInvalidAppSpec", err)
+	}
+	if _, err := json.Marshal(mixed); !errors.Is(err, ErrInvalidAppSpec) {
+		t.Fatalf("Marshal(mixed) error = %v, want ErrInvalidAppSpec", err)
 	}
 }
 
@@ -117,6 +155,18 @@ func TestNormalizeGenerationRequest(t *testing.T) {
 }
 
 func TestNormalizePreviewStateValidatesTemplateState(t *testing.T) {
+	files := validGeneratedFiles()
+	customState, err := NormalizePreviewState(AppSpec{Files: &files}, json.RawMessage(`{"remaining":1499,"running":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(customState), `"remaining":1499`) {
+		t.Fatalf("custom state = %s", customState)
+	}
+	if _, err := NormalizePreviewState(AppSpec{Files: &files}, json.RawMessage(`[1,2,3]`)); !errors.Is(err, ErrInvalidPreviewState) {
+		t.Fatalf("array custom state error = %v, want ErrInvalidPreviewState", err)
+	}
+
 	todo := validTodoSpec()
 	state, err := NormalizePreviewState(AppSpec{Todo: &todo}, json.RawMessage(`{"items":[{"id":"one","text":"整理计划","category":"工作","priority":"high","done":true}]}`))
 	if err != nil {

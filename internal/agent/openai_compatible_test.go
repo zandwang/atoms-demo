@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zand/atoms-demo/internal/domain"
 )
@@ -19,24 +21,18 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 
 func validResultJSON(t *testing.T) string {
 	t.Helper()
+	files := domain.GeneratedFiles{
+		HTML: `<main><h1>番茄钟</h1><button id="start">开始</button></main>`,
+		CSS:  `body { font-family: sans-serif; }`,
+		JS:   `document.getElementById("start").addEventListener("click", () => {});`,
+	}
 	result := domain.AgentResult{
 		Plan: domain.AgentPlan{
-			Summary:          "创建一个工作清单。",
-			Steps:            []string{"建立工作分类", "添加首个任务"},
-			SelectedTemplate: domain.TemplateTodo,
+			Summary: "创建一个番茄钟。",
+			Steps:   []string{"建立计时界面", "添加开始操作"},
 		},
-		AssistantMessage: "已生成待办清单。",
-		Spec: domain.AppSpec{Todo: &domain.TodoSpec{
-			SchemaVersion: 1,
-			Template:      domain.TemplateTodo,
-			Title:         "工作清单",
-			Description:   "专注完成重要工作。",
-			Theme:         domain.TodoThemeViolet,
-			Categories:    []string{"工作"},
-			InitialItems: []domain.TodoSeedItem{
-				{Text: "完成方案", Category: "工作", Priority: domain.TodoPriorityHigh},
-			},
-		}},
+		AssistantMessage: "已生成番茄钟。",
+		Spec:             domain.AppSpec{Files: &files},
 	}
 	encoded, err := json.Marshal(result)
 	if err != nil {
@@ -63,14 +59,14 @@ func TestOpenAICompatibleAdapterParsesValidatedResult(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(responseBody)))}, nil
 	})}
 
-	result, err := adapter.Generate(context.Background(), PromptInput{ProjectName: "Demo", UserRequest: "做一个工作待办"})
+	result, err := adapter.Generate(context.Background(), PromptInput{ProjectName: "Demo", UserRequest: "做一个番茄钟"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if receivedAuthorization != "Bearer test-key" {
 		t.Fatalf("authorization = %q", receivedAuthorization)
 	}
-	if result.Spec.Todo.Title != "工作清单" {
+	if result.Spec.TemplateName() != domain.TemplateCustom || !strings.Contains(result.Spec.Files.HTML, "番茄钟") {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -122,6 +118,35 @@ func TestOpenAICompatibleAdapterMapsInvalidModelJSON(t *testing.T) {
 	_, err := adapter.Generate(context.Background(), PromptInput{ProjectName: "Demo", UserRequest: "做一个待办"})
 	public := PublicError(err)
 	if public.Code != ErrorModelOutputInvalid || !public.Retryable {
+		t.Fatalf("PublicError() = %#v", public)
+	}
+}
+
+func TestOpenAICompatibleAdapterPreservesSafeUpstreamStatus(t *testing.T) {
+	adapter := NewOpenAICompatibleAdapter("https://model.example/v1", "test-key", "demo-model")
+	adapter.client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"rate limited"}`))}, nil
+	})}
+
+	_, err := adapter.Generate(context.Background(), PromptInput{ProjectName: "Demo", UserRequest: "做一个番茄钟"})
+	public := PublicError(err)
+	if public.Code != ErrorUpstreamUnavailable || public.UpstreamStatus != http.StatusTooManyRequests {
+		t.Fatalf("PublicError() = %#v", public)
+	}
+}
+
+func TestOpenAICompatibleAdapterUsesContextCauseOnTimeout(t *testing.T) {
+	adapter := NewOpenAICompatibleAdapter("https://model.example/v1", "test-key", "demo-model")
+	adapter.client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	ctx, cancel := context.WithTimeoutCause(context.Background(), time.Millisecond, errors.New("model generation deadline exceeded"))
+	defer cancel()
+
+	_, err := adapter.Generate(ctx, PromptInput{ProjectName: "Demo", UserRequest: "做一个番茄钟"})
+	public := PublicError(err)
+	if public.Code != ErrorUpstreamTimeout || public.Cause == nil || public.Cause.Error() != "model generation deadline exceeded" {
 		t.Fatalf("PublicError() = %#v", public)
 	}
 }

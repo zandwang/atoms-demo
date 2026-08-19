@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +18,6 @@ import (
 )
 
 const (
-	generationTimeout     = 45 * time.Second
 	modelBaseURLHeader    = "X-Model-Base-URL"
 	modelNameHeader       = "X-Model-Name"
 	modelAPIKeyHeader     = "X-Model-API-Key"
@@ -24,6 +25,8 @@ const (
 	maxModelNameLength    = 256
 	maxModelAPIKeyLength  = 4096
 )
+
+var errModelGenerationTimeout = errors.New("model generation deadline exceeded")
 
 type generateRequest struct {
 	UserRequest string `json:"userRequest"`
@@ -110,12 +113,28 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 	if s.writeProjectError(w, err) {
 		return
 	}
+	generationStartedAt := time.Now()
+	s.logger.Info("generation started",
+		"project_id", projectID,
+		"attempt_id", attempt.ID,
+		"request_length", len(userRequest),
+		"recent_message_count", len(recentMessages),
+		"has_current_version", currentVersion != nil,
+	)
 
 	prepareSSE(w)
 	if err := writeSSE(w, "stage", generationStageEvent{Status: "requesting_model", Label: "正在请求模型…"}); err != nil {
 		return
 	}
-	modelContext, cancel := context.WithTimeoutCause(r.Context(), generationTimeout, errors.New("model generation timed out"))
+	modelStartedAt := time.Now()
+	modelTimeout := s.config.GenerationTimeout()
+	s.logger.Info("model generation started",
+		"project_id", projectID,
+		"attempt_id", attempt.ID,
+		"timeout", modelTimeout,
+		"byok", s.model == nil,
+	)
+	modelContext, cancel := context.WithTimeoutCause(r.Context(), modelTimeout, errModelGenerationTimeout)
 	defer cancel()
 	result, err := model.Generate(modelContext, agent.PromptInput{
 		ProjectName:    project.Name,
@@ -124,13 +143,42 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 		RecentMessages: recentMessages,
 	})
 	if err != nil {
-		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, agent.PublicError(err))
+		failure := agent.PublicError(err)
+		s.logger.Warn("model generation failed",
+			"project_id", projectID,
+			"attempt_id", attempt.ID,
+			"duration", time.Since(modelStartedAt),
+			"error_code", failure.Code,
+			"upstream_status", failure.UpstreamStatus,
+			"cause", diagnosticCause(err),
+		)
+		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, failure)
 		return
 	}
+	htmlBytes, cssBytes, jsBytes := 0, 0, 0
+	if result.Spec.Files != nil {
+		htmlBytes = len(result.Spec.Files.HTML)
+		cssBytes = len(result.Spec.Files.CSS)
+		jsBytes = len(result.Spec.Files.JS)
+	}
+	s.logger.Info("model generation completed",
+		"project_id", projectID,
+		"attempt_id", attempt.ID,
+		"duration", time.Since(modelStartedAt),
+		"html_bytes", htmlBytes,
+		"css_bytes", cssBytes,
+		"js_bytes", jsBytes,
+	)
 	if err := writeSSE(w, "stage", generationStageEvent{Status: "validating", Label: "正在校验应用规格…"}); err != nil {
 		return
 	}
 	if err := result.NormalizeAndValidate(); err != nil {
+		s.logger.Warn("model result validation failed",
+			"project_id", projectID,
+			"attempt_id", attempt.ID,
+			"duration", time.Since(generationStartedAt),
+			"cause", diagnosticCause(err),
+		)
 		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, agent.PublicError(err))
 		return
 	}
@@ -139,16 +187,23 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 	}
 	artifact, err := compiler.Compile(result.Spec)
 	if err != nil {
+		s.logger.Warn("generated app compilation failed",
+			"project_id", projectID,
+			"attempt_id", attempt.ID,
+			"duration", time.Since(generationStartedAt),
+			"cause", diagnosticCause(err),
+		)
 		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, agent.PublicError(err))
 		return
 	}
 	version, err := s.repository.CompleteGeneration(r.Context(), workspace.ID, projectID, attempt.ID, activeVersionID(currentVersion), result, artifact)
 	if err != nil {
-		s.logger.Error("complete generation", "project_id", projectID, "error", err)
+		s.logger.Error("complete generation failed", "project_id", projectID, "attempt_id", attempt.ID, "error", diagnosticCause(err))
 		failure := &agent.Error{Code: agent.ErrorUpstreamUnavailable, Message: "无法保存生成结果，请重试。", Retryable: true, Cause: err}
 		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, failure)
 		return
 	}
+	s.logger.Info("generation completed", "project_id", projectID, "attempt_id", attempt.ID, "version_id", version.ID, "duration", time.Since(generationStartedAt))
 	_ = writeSSE(w, "result", generationResultEvent{Version: version, Message: result.AssistantMessage})
 }
 
@@ -175,9 +230,46 @@ func sendGenerationFailure(s server, w http.ResponseWriter, workspace domain.Wor
 	persistContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := s.repository.FailGeneration(persistContext, workspace.ID, projectID, attemptID, string(failure.Code), failure.Message); err != nil {
-		s.logger.Error("record generation failure", "project_id", projectID, "error", err)
+		s.logger.Error("record generation failure", "project_id", projectID, "attempt_id", attemptID, "error", diagnosticCause(err))
 	}
+	s.logger.Warn("generation failed", "project_id", projectID, "attempt_id", attemptID, "error_code", failure.Code, "upstream_status", failure.UpstreamStatus, "retryable", failure.Retryable, "cause", diagnosticCause(failure.Cause))
 	_ = writeSSE(w, "error", generationErrorEvent{Code: string(failure.Code), Message: failure.Message, Retryable: failure.Retryable})
+}
+
+func diagnosticCause(err error) string {
+	if err == nil {
+		return "not available"
+	}
+	if errors.Is(err, errModelGenerationTimeout) {
+		return errModelGenerationTimeout.Error()
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context deadline exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context canceled"
+	}
+	var modelError *agent.Error
+	if errors.As(err, &modelError) && modelError.Cause != nil && modelError.Cause != err {
+		return diagnosticCause(modelError.Cause)
+	}
+	var urlError *url.Error
+	if errors.As(err, &urlError) {
+		return fmt.Sprintf("HTTP %s failed: %s", urlError.Op, diagnosticCause(urlError.Err))
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		return fmt.Sprintf("DNS lookup failed: timeout=%t not_found=%t", dnsError.IsTimeout, dnsError.IsNotFound)
+	}
+	var operationError *net.OpError
+	if errors.As(err, &operationError) {
+		return fmt.Sprintf("network %s failed: %s", operationError.Op, diagnosticCause(operationError.Err))
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		return fmt.Sprintf("network error: type=%T timeout=%t", networkError, networkError.Timeout())
+	}
+	return fmt.Sprintf("type=%T", err)
 }
 
 func prepareSSE(w http.ResponseWriter) {

@@ -34,10 +34,11 @@ const (
 // Error contains a safe, user-facing description and preserves its root cause
 // for local control flow only. It must not be populated with raw provider data.
 type Error struct {
-	Code      ErrorCode
-	Message   string
-	Retryable bool
-	Cause     error
+	Code           ErrorCode
+	Message        string
+	Retryable      bool
+	UpstreamStatus int
+	Cause          error
 }
 
 func (e *Error) Error() string {
@@ -63,7 +64,7 @@ func PublicError(err error) *Error {
 		return &Error{Code: ErrorUpstreamTimeout, Message: "模型响应超时，请重试。", Retryable: true, Cause: err}
 	}
 	if errors.Is(err, domain.ErrUnsupportedTemplate) {
-		return &Error{Code: ErrorUnsupportedRequest, Message: "当前仅支持待办、笔记或习惯打卡这三类小型单页应用，请换一种描述后重试。", Retryable: true, Cause: err}
+		return &Error{Code: ErrorUnsupportedRequest, Message: "当前仅支持可离线运行的小型单页应用，请缩小需求范围后重试。", Retryable: true, Cause: err}
 	}
 	if errors.Is(err, domain.ErrInvalidAgentResult) || errors.Is(err, domain.ErrInvalidAppSpec) {
 		return &Error{Code: ErrorModelOutputInvalid, Message: "模型返回的应用规格无法安全使用，请重试。", Retryable: true, Cause: err}

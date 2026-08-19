@@ -1,14 +1,19 @@
 package app
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zand/atoms-demo/internal/agent"
 	"github.com/zand/atoms-demo/internal/config"
@@ -99,6 +104,64 @@ func TestGenerateRejectsInvalidModelEndpoint(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"MODEL_ENDPOINT_INVALID"`) {
 		t.Fatalf("invalid endpoint response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGenerateFailureWritesDiagnosticLogsWithoutRequestContent(t *testing.T) {
+	repository, err := sqlite.OpenPath(filepath.Join(t.TempDir(), "atoms-demo.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	model := &agent.FakeAdapter{Err: &agent.Error{
+		Code:      agent.ErrorUpstreamTimeout,
+		Message:   "模型响应超时，请重试。",
+		Retryable: true,
+		Cause:     context.DeadlineExceeded,
+	}}
+	handler := NewHandlerWithModel(config.Config{ModelTimeout: 2 * time.Minute}, logger, repository, model)
+	cookie := initializeSession(t, handler, "Log tester")
+	projectID := createTestProject(t, handler, cookie, "Logged app")
+	privateRequest := "生成一个不能出现在日志里的应用需求"
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/generate", strings.NewReader(`{"userRequest":"`+privateRequest+`"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"code":"UPSTREAM_TIMEOUT"`) {
+		t.Fatalf("generation response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	output := logs.String()
+	for _, expected := range []string{"generation started", "model generation started", "timeout=2m0s", "model generation failed", "error_code=UPSTREAM_TIMEOUT", "context deadline exceeded", "generation failed"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("logs missing %q: %s", expected, output)
+		}
+	}
+	if strings.Contains(output, privateRequest) {
+		t.Fatalf("logs contain user request: %s", output)
+	}
+}
+
+func TestDiagnosticCauseRedactsEndpoint(t *testing.T) {
+	secretEndpoint := "https://private-model.example/v1/chat/completions"
+	diagnostic := diagnosticCause(&url.Error{
+		Op:  "Post",
+		URL: secretEndpoint,
+		Err: &net.DNSError{IsNotFound: true},
+	})
+	if strings.Contains(diagnostic, secretEndpoint) || !strings.Contains(diagnostic, "DNS lookup failed") {
+		t.Fatalf("diagnosticCause() = %q", diagnostic)
+	}
+}
+
+func TestDiagnosticCauseRecognizesModelDeadline(t *testing.T) {
+	err := &url.Error{Op: "Post", URL: "https://private-model.example", Err: errModelGenerationTimeout}
+	if got := diagnosticCause(err); got != "model generation deadline exceeded" {
+		t.Fatalf("diagnosticCause() = %q", got)
 	}
 }
 
@@ -202,7 +265,7 @@ func TestGenerateStreamsStagesAndPersistsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	generationRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.Data.ID+"/generate", strings.NewReader(`{"userRequest":"做一个工作待办"}`))
+	generationRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.Data.ID+"/generate", strings.NewReader(`{"userRequest":"做一个番茄钟"}`))
 	generationRequest.Header.Set("Content-Type", "application/json")
 	generationRequest.AddCookie(cookie)
 	generationRecorder := httptest.NewRecorder()
@@ -218,7 +281,7 @@ func TestGenerateStreamsStagesAndPersistsVersion(t *testing.T) {
 			t.Fatalf("SSE stream missing %q: %s", event, generationRecorder.Body.String())
 		}
 	}
-	if len(fake.Inputs) != 1 || fake.Inputs[0].UserRequest != "做一个工作待办" {
+	if len(fake.Inputs) != 1 || fake.Inputs[0].UserRequest != "做一个番茄钟" {
 		t.Fatalf("fake inputs = %#v", fake.Inputs)
 	}
 
@@ -226,14 +289,14 @@ func TestGenerateStreamsStagesAndPersistsVersion(t *testing.T) {
 	versionsRequest.AddCookie(cookie)
 	versionsRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(versionsRecorder, versionsRequest)
-	if versionsRecorder.Code != http.StatusOK || !strings.Contains(versionsRecorder.Body.String(), "工作清单") {
+	if versionsRecorder.Code != http.StatusOK || !strings.Contains(versionsRecorder.Body.String(), "番茄钟") || !strings.Contains(versionsRecorder.Body.String(), `"template":"custom"`) {
 		t.Fatalf("versions response = %d %s", versionsRecorder.Code, versionsRecorder.Body.String())
 	}
 	messagesRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+created.Data.ID+"/messages", nil)
 	messagesRequest.AddCookie(cookie)
 	messagesRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(messagesRecorder, messagesRequest)
-	if messagesRecorder.Code != http.StatusOK || !strings.Contains(messagesRecorder.Body.String(), "已生成工作待办清单") {
+	if messagesRecorder.Code != http.StatusOK || !strings.Contains(messagesRecorder.Body.String(), "已生成番茄钟") {
 		t.Fatalf("messages response = %d %s", messagesRecorder.Code, messagesRecorder.Body.String())
 	}
 }
@@ -242,7 +305,7 @@ func TestVersionActivationAndPreviewStateAPI(t *testing.T) {
 	handler := newTestHandlerWithModel(t, &agent.FakeAdapter{Result: testGenerationResult()})
 	cookie := initializeSession(t, handler, "Zand")
 	projectID := createTestProject(t, handler, cookie, "Versioned app")
-	for _, requestText := range []string{"做一个工作待办", "把它改得更简洁"} {
+	for _, requestText := range []string{"做一个番茄钟", "把专注时长改为 50 分钟"} {
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/generate", strings.NewReader(`{"userRequest":"`+requestText+`"}`))
 		request.Header.Set("Content-Type", "application/json")
 		request.AddCookie(cookie)
@@ -279,7 +342,7 @@ func TestVersionActivationAndPreviewStateAPI(t *testing.T) {
 		t.Fatalf("activate response = %d %s", activateRecorder.Code, activateRecorder.Body.String())
 	}
 
-	validState := `{"state":{"items":[{"id":"one","text":"完成方案","category":"工作","priority":"high","done":true}]}}`
+	validState := `{"state":{"remaining":1499,"running":true,"completedToday":1}}`
 	saveRequest := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/versions/"+firstVersionID+"/preview-state", strings.NewReader(validState))
 	saveRequest.Header.Set("Content-Type", "application/json")
 	saveRequest.AddCookie(cookie)
@@ -293,11 +356,11 @@ func TestVersionActivationAndPreviewStateAPI(t *testing.T) {
 	getRequest.AddCookie(cookie)
 	getRecorder := httptest.NewRecorder()
 	handler.ServeHTTP(getRecorder, getRequest)
-	if getRecorder.Code != http.StatusOK || !strings.Contains(getRecorder.Body.String(), `"done":true`) {
+	if getRecorder.Code != http.StatusOK || !strings.Contains(getRecorder.Body.String(), `"remaining":1499`) {
 		t.Fatalf("get preview state = %d %s", getRecorder.Code, getRecorder.Body.String())
 	}
 
-	invalidState := `{"state":{"items":[{"id":"one","text":"完成方案","category":"未知","priority":"high","done":true}]}}`
+	invalidState := `{"state":["custom state must be an object"]}`
 	invalidRequest := httptest.NewRequest(http.MethodPut, "/api/projects/"+projectID+"/versions/"+firstVersionID+"/preview-state", strings.NewReader(invalidState))
 	invalidRequest.Header.Set("Content-Type", "application/json")
 	invalidRequest.AddCookie(cookie)
@@ -386,23 +449,17 @@ func contains(text, fragment string) bool {
 }
 
 func testGenerationResult() domain.AgentResult {
+	files := domain.GeneratedFiles{
+		HTML: `<main><h1>番茄钟</h1><output id="timer">25:00</output><button id="start">开始</button></main>`,
+		CSS:  `body { font-family: sans-serif; } output { display: block; font-size: 3rem; }`,
+		JS:   `const timer = document.getElementById("timer"); document.getElementById("start").addEventListener("click", () => { timer.textContent = "24:59"; window.atomsPreview.publish({remaining: 1499}); });`,
+	}
 	return domain.AgentResult{
 		Plan: domain.AgentPlan{
-			Summary:          "创建一个工作待办清单。",
-			Steps:            []string{"建立工作分类", "添加初始任务"},
-			SelectedTemplate: domain.TemplateTodo,
+			Summary: "创建一个可操作的番茄钟。",
+			Steps:   []string{"构建计时界面", "添加开始和状态保存逻辑"},
 		},
-		AssistantMessage: "已生成工作待办清单。",
-		Spec: domain.AppSpec{Todo: &domain.TodoSpec{
-			SchemaVersion: 1,
-			Template:      domain.TemplateTodo,
-			Title:         "工作清单",
-			Description:   "今天专注完成关键任务。",
-			Theme:         domain.TodoThemeViolet,
-			Categories:    []string{"工作"},
-			InitialItems: []domain.TodoSeedItem{
-				{Text: "完成方案", Category: "工作", Priority: domain.TodoPriorityHigh},
-			},
-		}},
+		AssistantMessage: "已生成番茄钟。",
+		Spec:             domain.AppSpec{Files: &files},
 	}
 }

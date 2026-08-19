@@ -48,7 +48,7 @@ export type Message = {
 export type AgentPlan = {
   summary: string;
   steps: string[];
-  selectedTemplate: "todo" | "notes" | "habits";
+  selectedTemplate?: "todo" | "notes" | "habits" | "custom";
 };
 
 export type TodoPriority = "low" | "medium" | "high";
@@ -94,10 +94,16 @@ export type HabitsSpec = {
   }>;
 };
 
-export type AppSpec = TodoSpec | NotesSpec | HabitsSpec;
+export type CustomSpec = {
+  schemaVersion: 1;
+  template: "custom";
+  files: { indexHtml: string; stylesCss: string; appJs: string };
+};
+
+export type AppSpec = TodoSpec | NotesSpec | HabitsSpec | CustomSpec;
 
 export type ArtifactManifest = {
-  template: "todo" | "notes" | "habits";
+  template: "todo" | "notes" | "habits" | "custom";
   actions: string[];
   checksum: string;
 };

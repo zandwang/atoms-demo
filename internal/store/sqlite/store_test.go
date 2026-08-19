@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zand/atoms-demo/internal/compiler"
@@ -105,7 +106,7 @@ func TestGenerationLifecyclePersistsMessagesVersionAndActiveArtifact(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := persistence.BeginGeneration(ctx, workspace.ID, project.ID, "做一个工作待办")
+	attempt, err := persistence.BeginGeneration(ctx, workspace.ID, project.ID, "做一个番茄钟")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestGenerationLifecyclePersistsMessagesVersionAndActiveArtifact(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 1 || versions[0].ID != version.ID || versions[0].Spec.Todo.Title != "工作清单" {
+	if len(versions) != 1 || versions[0].ID != version.ID || versions[0].Spec.Files == nil || !strings.Contains(versions[0].Spec.Files.HTML, "番茄钟") {
 		t.Fatalf("versions = %#v", versions)
 	}
 	active, err := persistence.ActiveVersion(ctx, workspace.ID, project.ID)
@@ -151,7 +152,7 @@ func TestGenerationLifecyclePersistsMessagesVersionAndActiveArtifact(t *testing.
 		t.Fatalf("active version = %#v", active)
 	}
 
-	state := json.RawMessage(`{"items":[{"id":"local-1","text":"完成方案","category":"工作","priority":"high","done":true}]}`)
+	state := json.RawMessage(`{"remaining":1499,"running":true}`)
 	if err := persistence.SavePreviewState(ctx, workspace.ID, project.ID, version.ID, state); err != nil {
 		t.Fatal(err)
 	}
@@ -162,18 +163,18 @@ func TestGenerationLifecyclePersistsMessagesVersionAndActiveArtifact(t *testing.
 	if string(restoredState) != string(state) {
 		t.Fatalf("preview state = %s, want %s", restoredState, state)
 	}
-	invalidState := json.RawMessage(`{"items":[{"id":"local-1","text":"完成方案","category":"未知","priority":"high","done":true}]}`)
+	invalidState := json.RawMessage(`["state must be an object"]`)
 	if err := persistence.SavePreviewState(ctx, workspace.ID, project.ID, version.ID, invalidState); !errors.Is(err, domain.ErrInvalidPreviewState) {
 		t.Fatalf("SavePreviewState() error = %v, want ErrInvalidPreviewState", err)
 	}
 
-	secondAttempt, err := persistence.BeginGeneration(ctx, workspace.ID, project.ID, "改成新版工作清单")
+	secondAttempt, err := persistence.BeginGeneration(ctx, workspace.ID, project.ID, "改成 50 分钟专注")
 	if err != nil {
 		t.Fatal(err)
 	}
 	secondResult := testAgentResult()
-	secondResult.Plan.Summary = "创建新版工作清单。"
-	secondResult.Spec.Todo.Title = "新版工作清单"
+	secondResult.Plan.Summary = "把番茄钟改成 50 分钟。"
+	secondResult.Spec.Files.HTML = strings.Replace(secondResult.Spec.Files.HTML, "25:00", "50:00", 1)
 	secondArtifact, err := compiler.Compile(secondResult.Spec)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +199,7 @@ func TestGenerationLifecyclePersistsMessagesVersionAndActiveArtifact(t *testing.
 	}
 	thirdResult := testAgentResult()
 	thirdResult.Plan.Summary = "不会覆盖当前版本的新结果。"
-	thirdResult.Spec.Todo.Title = "第三版工作清单"
+	thirdResult.Spec.Files.HTML = strings.Replace(thirdResult.Spec.Files.HTML, "25:00", "45:00", 1)
 	thirdArtifact, err := compiler.Compile(thirdResult.Spec)
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +262,7 @@ func TestVersionAndPreviewStateSurviveStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := firstStore.BeginGeneration(ctx, workspace.ID, project.ID, "做一个待办")
+	attempt, err := firstStore.BeginGeneration(ctx, workspace.ID, project.ID, "做一个番茄钟")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,7 @@ func TestVersionAndPreviewStateSurviveStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := json.RawMessage(`{"items":[{"id":"persisted","text":"完成方案","category":"工作","priority":"high","done":true}]}`)
+	state := json.RawMessage(`{"remaining":1234,"running":false}`)
 	if err := firstStore.SavePreviewState(ctx, workspace.ID, project.ID, version.ID, state); err != nil {
 		t.Fatal(err)
 	}
@@ -315,23 +316,17 @@ func TestVersionAndPreviewStateSurviveStoreReopen(t *testing.T) {
 }
 
 func testAgentResult() domain.AgentResult {
+	files := domain.GeneratedFiles{
+		HTML: `<main><h1>番茄钟</h1><output id="timer">25:00</output><button id="start">开始</button></main>`,
+		CSS:  `body { font-family: sans-serif; } output { display: block; font-size: 3rem; }`,
+		JS:   `const timer = document.getElementById("timer"); document.getElementById("start").addEventListener("click", () => { timer.textContent = "24:59"; window.atomsPreview.publish({remaining: 1499, running: true}); });`,
+	}
 	return domain.AgentResult{
 		Plan: domain.AgentPlan{
-			Summary:          "创建一个聚焦工作的待办清单。",
-			Steps:            []string{"添加工作分类", "准备首项任务"},
-			SelectedTemplate: domain.TemplateTodo,
+			Summary: "创建一个可操作的番茄钟。",
+			Steps:   []string{"创建计时界面", "添加开始和状态保存逻辑"},
 		},
-		AssistantMessage: "已准备好工作待办清单。",
-		Spec: domain.AppSpec{Todo: &domain.TodoSpec{
-			SchemaVersion: 1,
-			Template:      domain.TemplateTodo,
-			Title:         "工作清单",
-			Description:   "专注今天的关键任务。",
-			Theme:         domain.TodoThemeForest,
-			Categories:    []string{"工作"},
-			InitialItems: []domain.TodoSeedItem{
-				{Text: "完成方案", Category: "工作", Priority: domain.TodoPriorityHigh},
-			},
-		}},
+		AssistantMessage: "已生成番茄钟。",
+		Spec:             domain.AppSpec{Files: &files},
 	}
 }

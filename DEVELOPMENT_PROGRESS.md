@@ -6,10 +6,10 @@
 
 | 项目 | 状态 | 说明 |
 | --- | --- | --- |
-| 最后更新 | 2026-08-19 | Render 构建适配完成，等待提交后重新部署 |
-| 当前阶段 | M6 线上小规模验收 | 进行中 |
-| 当前阻塞项 | Render 首次失败原因为未安装 `web/node_modules`，已修复；尚未完成重新部署和线上生成验收 | 免费实例的 SQLite 持久化、休眠和限流风险仍存在 |
-| 下一步 | 提交构建修复，Render 重新部署并验证 `/api/health`、页面和一次自定义 endpoint 生成 | 不开启私网 endpoint 放行 |
+| 最后更新 | 2026-08-19 | 已扩大右侧应用预览区域并完成前端构建验证 |
+| 当前阶段 | M3/M4 通用生成、迭代与兼容收尾 | 进行中 |
+| 当前阻塞项 | 无 | 预览区域已扩大；模型超时配置和诊断日志已完成 |
+| 下一步 | 重启服务完成真实模型生成验收，并确认大预览区下的应用交互 | 先保持历史 SQLite 版本可读取 |
 | 本地运行目标 | Go 单二进制 | React 仅为构建期依赖 |
 
 ## 状态标记
@@ -67,31 +67,31 @@
 - [x] 定义 `AppSpec`、`AgentResult`、错误码及所有输入/输出验证。
 - [x] 实现 OpenAI-compatible model adapter、超时、错误映射和 fake adapter。
 - [x] 实现 Agent prompt builder 与 `POST /api/projects/{projectID}/generate` SSE。
-- [x] 实现 `todo` 模板的 Go 编译器，生成 HTML/CSS/JS artifact。
+- [x] 实现通用 HTML/CSS/JS 文件生成器，替换新生成链路中的固定模板选择。
 - [x] 实现对话时间线、提示词输入、真实阶段反馈、错误和重试交互。
 - [x] 实现受 sandbox 限制的 iframe 预览和代码查看。
-- [ ] 使用用户提供的 endpoint、model、Key 完成一次“输入 → 待办应用预览”的本地联调。
+- [ ] 使用用户提供的 endpoint、model、Key 完成一次“输入 → 任意小型 SPA 预览”的本地联调。
 
-完成条件：用户可输入需求，看到真实模型结果、可运行待办应用及编译代码；失败不丢失请求且可重试。
+完成条件：用户可输入需求，看到真实模型结果、可运行的小型单页应用及生成文件；失败不丢失请求且可重试。
 
-### M4：模板扩展、迭代与版本历史
+### M4：通用迭代与版本历史
 
 状态：`进行中`
 
-- [x] 实现 `notes` 与 `habits` 编译器和对应规格校验。
+- [x] 移除三模板作为产品边界，加入通用文件版本和安全校验；旧模板仅保留历史读取兼容。
 - [x] 实现基于当前版本的自然语言迭代；新结果生成不可变版本。
 - [x] 实现版本列表、版本详情、激活/回滚和 system message。
 - [x] 实现 iframe `postMessage` 状态桥接与 `preview_states` API。
 - [x] 通过 SQLite 重开、版本激活和状态 API 测试验证预览内数据、活跃版本和项目记录可恢复。
 
-完成条件：三类应用可稳定生成；用户可迭代、查看历史、回滚，并恢复每个版本的预览运行态。
+完成条件：受约束的小型单页应用可稳定生成；用户可迭代、查看历史、回滚，并恢复每个版本的预览运行态。
 
 ### M5：质量、体验与本地验收
 
 状态：`进行中`
 
 - [x] 完成响应式三栏 UI、加载/空/错误状态和基本可访问性。
-- [ ] 补齐 Go 单元/集成测试、React 组件测试和 Playwright 主流程测试（Go 覆盖已完成，前端/E2E 待补）。
+- [ ] 补齐 React 组件测试和 Playwright 主流程测试（Go 单元/集成覆盖已完成）。
 - [x] 覆盖模型超时、无效输出、配置错误、项目归属和预览状态异常。
 - [x] 编写 README：依赖、环境变量、启动、构建、测试、演示步骤和已知限制。
 - [ ] 按 [需求分析计划](./REQUIREMENTS_ANALYSIS_PLAN.md) 的端到端验收场景逐条验收。
@@ -148,6 +148,98 @@
 ```
 
 ## 开发日志
+
+### 2026-08-19 — 右侧预览区扩展 — 已完成
+
+- 完成：
+  - 将桌面端右侧预览栏宽度从最大 420px 调整为 440–560px。
+  - 将预览 iframe 桌面最小高度从 430px 提升到 620px，并按视口高度增长；移动端使用 520px 稳定高度，避免小屏布局异常。
+  - 保留代码、文件和版本列表的内部滚动，不让生成文件内容撑坏整个工作台。
+- 修改：
+  - `web/src/App.tsx` — 三栏网格、预览面板和 iframe 响应式尺寸。
+- 验证：
+  - `cd web && npm run build` — 通过。
+  - `git diff --check` — 通过。
+- 未完成或风险：
+  - 尚未在用户实际浏览器尺寸下截图验收；极窄桌面窗口会自动进入移动单列布局。
+- 下次从这里继续：
+  1. 刷新浏览器验证右栏宽度和 iframe 高度。
+  2. 继续真实模型生成验收。
+
+### 2026-08-19 — 模型生成诊断日志与可配置超时 — 已完成
+
+- 完成：
+  - 为生成任务增加开始、模型调用开始/完成/失败、校验/编译失败和最终完成/失败日志。
+  - 日志包含 project/attempt/version ID、阶段耗时、45 秒超时配置、错误码、上游 HTTP 状态、消息数量和生成文件大小。
+  - 对网络根因进行脱敏归类；不记录用户需求正文、endpoint、model、API Key、Authorization、Cookie 或上游响应体。
+  - 模型 adapter 保留安全的上游 HTTP 状态用于诊断，并修正旧三模板的过期错误文案。
+  - 根据真实日志确认 45 秒写死超时导致通用应用生成失败；改为默认 120 秒，并支持 `ATOMS_MODEL_TIMEOUT` 在 10 秒到 10 分钟之间配置。
+  - 保留 `context.WithTimeoutCause` 的自定义原因，日志显示 `model generation deadline exceeded`，不再只显示 `type=*errors.errorString`。
+- 修改：
+  - `internal/app/generation.go` — 生成链路结构化日志和网络原因脱敏。
+  - `internal/config/config.go`、`.env.example`、`cmd/atoms-demo/main.go` — 模型超时配置、范围校验和启动日志。
+  - `internal/agent/adapter.go`、`internal/agent/openai_compatible.go` — 安全上游状态和通用范围错误文案。
+  - `internal/app/server_test.go`、`internal/agent/openai_compatible_test.go` — 日志脱敏、超时日志和 HTTP 状态测试。
+  - `internal/config/config_test.go` — 默认值、有效值和非法超时配置测试。
+  - `README.md`、`CODE_DESIGN.md` — 排查方式与日志安全边界。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...` — 通过。
+  - `go mod verify`、`GOCACHE=/private/tmp/atoms-demo-go-build-cache make build`、`git diff --check` — 通过；本机 Go module stat cache 仍有非阻断权限警告。
+- 未完成或风险：
+  - 尚未用用户的真实模型 endpoint 在 120 秒配置下完成成功生成验收；如果仍超时，需根据新的 `attempt_id` 和 `cause` 继续区分模型服务或网络问题。
+- 下次从这里继续：
+  1. 重启 `make run` 后再次生成，确认启动日志为 `model_timeout=2m0s`，找到同一 `attempt_id` 的模型阶段日志。
+  2. 若仍超时，检查新的 `cause` 是否为 `model generation deadline exceeded`，或出现 DNS/网络错误。
+  3. 验收成功后提交、推送并重新部署 Render。
+
+### 2026-08-19 — 目标纠偏：通用小型单页应用生成 — 首轮完成
+
+- 完成：
+  - 根据用户确认，将产品目标从“三种固定模板生成器”改为“用户描述任意小型单页应用，AI 生成可操作网页并支持自然语言迭代”。
+  - 更新需求分析和技术设计，明确受约束的 `index.html`、`styles.css`、`app.js` 文件集合、代码安全边界和 sandbox 预览。
+- 修改：
+  - `REQUIREMENTS_ANALYSIS_PLAN.md` — 将生成范围改为通用小型单页应用。
+  - `CODE_DESIGN.md` — 将 AppSpec/固定编译器方向改为受约束文件生成。
+  - `DEVELOPMENT_PROGRESS.md` — 标记核心生成链路重构开始。
+- 验证：
+  - 文档范围、用户旅程和 Definition of Ready 已更新；尚未开始代码重构。
+- 未完成或风险：
+  - 当前代码仍是 todo/notes/habits 三模板实现，不能作为最终目标交付。
+  - 已完成严格文件校验、危险 API 检查、通用预览状态和迭代上下文限制；仍需真实模型回归和线上部署后验收。
+- 下次从这里继续：
+  1. 使用真实 endpoint、model、Key 完成一次通用应用生成和自然语言迭代。
+  2. 提交并推送本次改动，触发 Render 重新部署。
+  3. 视历史数据迁移需要，再决定是否删除旧模板兼容编译器。
+
+### 2026-08-19 — 通用生成链路实现与验证 — 已完成
+
+- 完成：
+  - 新增 `custom` AppSpec，固定为 `indexHtml`、`stylesCss`、`appJs` 三个文件；新 Agent prompt 只生成该协议。
+  - 增加文件大小、NUL、外部资源、网络 API、Cookie、父窗口导航和内联容器逃逸校验；通用预览状态允许受限 JSON object。
+  - 新增通用 compiler，注入 CSP 和 `atomsPreview` 状态桥接；旧 todo/notes/habits 代码只作为历史 SQLite 兼容路径保留。
+  - 将前端引导、README、需求分析和技术设计改为任意小型单页应用目标，并明确 Demo 级 sandbox 限制。
+  - 将 domain、agent、compiler、store 和 app 主生成测试数据切换为番茄钟 custom 应用，覆盖生成、版本、回滚和状态恢复链路。
+- 修改：
+  - `internal/domain/generation.go`、`internal/compiler/generic.go`、`internal/store/sqlite/generations.go`、`internal/agent/prompt.go` — 通用文件协议、校验、编译、持久化和模型上下文。
+  - `internal/domain/generation_test.go`、`internal/compiler/generic_test.go`、`internal/agent/openai_compatible_test.go`、`internal/store/sqlite/store_test.go`、`internal/app/server_test.go` — 通用协议及端到端 fake 覆盖。
+  - `web/src/App.tsx`、`README.md`、`REQUIREMENTS_ANALYSIS_PLAN.md`、`CODE_DESIGN.md` — 产品文案、范围、安全边界和验收描述。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...` — 通过。
+  - `go mod verify` — 通过。
+  - `cd web && npm run build` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache make build` — 通过；默认本机 GOCACHE 的权限警告不影响代码构建。
+  - `git diff --check` — 通过。
+- 未完成或风险：
+  - 尚未使用真实用户模型配置完成新协议的浏览器端到端验收。
+  - 旧模板兼容编译器和 schema 尚未迁移删除；公开部署仍需限流、资源配额和更强的生成代码审查。
+- 下次从这里继续：
+  1. 用真实模型生成番茄钟，继续要求“改成 50 分钟并增加今日完成次数”，检查版本和回滚。
+  2. 提交、推送并重新部署 Render，验证线上 `make build` 和 BYOK。
+  3. 根据是否需要保留历史数据库决定旧模板迁移方案。
 
 ### 2026-08-19 — M6 Render 构建适配 — 已完成
 

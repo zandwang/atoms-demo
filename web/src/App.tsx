@@ -293,7 +293,7 @@ export function App() {
         </header>
         {notice ? <p className="mt-4 rounded-xl border border-emerald-300/15 bg-emerald-300/[0.07] px-3 py-2 text-sm text-emerald-100">{notice}</p> : null}
 
-        <section className="grid flex-1 gap-4 py-4 lg:grid-cols-[248px_minmax(0,1fr)_minmax(330px,420px)] lg:py-5">
+        <section className="grid flex-1 gap-4 py-4 lg:grid-cols-[248px_minmax(0,1fr)_minmax(440px,560px)] lg:py-5">
           <ProjectSidebar
             projects={projects}
             selectedProjectID={selectedProjectID}
@@ -480,7 +480,7 @@ function WorkspacePanel({
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-violet-300">Agent workspace</p>
           <h1 className="mt-3 text-2xl font-semibold tracking-tight">先创建或选择一个项目</h1>
-          <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">项目会自动保存到本地。创建后用自然语言描述待办、笔记或习惯打卡应用，Agent 会产生受控规格和可运行预览。</p>
+          <p className="mt-3 max-w-md text-sm leading-6 text-zinc-400">项目会自动保存到本地。创建后用自然语言描述一个小型单页应用，Agent 会生成完整文件和可运行预览。</p>
         </div>
       </section>
     );
@@ -497,7 +497,7 @@ function WorkspacePanel({
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-violet-300">Agent workspace</p>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight">{project.name}</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">{project.summary || "描述一个待办、笔记或习惯打卡应用，模型会返回受控规格，再由 Go 编译成独立的 HTML、CSS 和 JavaScript。"}</p>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-400">{project.summary || "描述你想制作的小型单页应用，模型会生成受约束的 HTML、CSS 和 JavaScript，并在隔离环境中运行。"}</p>
         </div>
         <div className="flex gap-2">
           <button className="rounded-lg border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-white/[0.05]" onClick={() => void onRename(project)} type="button">Rename</button>
@@ -532,7 +532,7 @@ function PlanCard({ version }: { version: GenerationVersion }) {
     <section className="mt-5 rounded-2xl border border-violet-400/15 bg-violet-400/[0.06] p-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs font-medium uppercase tracking-[0.16em] text-violet-200">Agent plan · v{version.sequence}</p>
-        <span className="rounded-full bg-violet-300/10 px-2 py-1 text-xs text-violet-100">{version.spec.template}</span>
+        <span className="rounded-full bg-violet-300/10 px-2 py-1 text-xs text-violet-100">{version.spec.template === "custom" ? "生成应用" : version.spec.template}</span>
       </div>
       <p className="mt-2 text-sm font-medium leading-6 text-zinc-100">{version.plan.summary}</p>
       <ol className="mt-3 space-y-1.5 pl-4 text-sm leading-6 text-zinc-400">
@@ -544,7 +544,7 @@ function PlanCard({ version }: { version: GenerationVersion }) {
 
 function MessageTimeline({ messages }: { messages: Message[] }) {
   if (messages.length === 0) {
-    return <div className="mt-6 flex flex-1 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-black/10 p-6 text-center text-sm leading-6 text-zinc-500">输入一段需求，例如“做一个深色主题的待办清单，包含工作和生活分类”。也可以创建笔记板或习惯打卡器；生成过程和 Agent 回复会保存在这里。</div>;
+    return <div className="mt-6 flex flex-1 items-center justify-center rounded-2xl border border-dashed border-white/10 bg-black/10 p-6 text-center text-sm leading-6 text-zinc-500">输入一段需求，例如“做一个可开始、暂停和重置的番茄钟”。也可以尝试计算器、旅行预算或数据看板；生成过程和 Agent 回复会保存在这里。</div>;
   }
   return (
     <div className="mt-6 flex min-h-0 flex-1 flex-col gap-3 overflow-auto pr-1">
@@ -593,7 +593,7 @@ function PromptComposer({ disabled, failure, onGenerate }: { disabled: boolean; 
         id="agent-request"
         maxLength={2000}
         onChange={(event) => setRequest(event.target.value)}
-        placeholder="描述你想要的应用，例如：做一个海洋蓝主题的旅行准备清单，或一个灵感笔记板。"
+        placeholder="描述你想要的应用，例如：做一个 25 分钟番茄钟，支持开始、暂停、重置和今日完成计数。"
         required
         value={request}
       />
@@ -625,7 +625,7 @@ function PreviewPanel({
   const [codeView, setCodeView] = useState<"html" | "css" | "js">("html");
 
   if (!project) {
-    return <PreviewEmpty title="Select a project" description="选择项目后，这里会显示隔离预览、受控规格和编译代码。" />;
+    return <PreviewEmpty title="Select a project" description="选择项目后，这里会显示隔离预览、生成文件和运行代码。" />;
   }
   if (!activeVersion) {
     return <PreviewEmpty title="No app generated yet" description="提交需求后，右侧会加载真实可交互的 sandbox 预览。" />;
@@ -633,17 +633,17 @@ function PreviewPanel({
 
   const source = codeView === "html" ? activeVersion.artifact.html : codeView === "css" ? activeVersion.artifact.css : activeVersion.artifact.js;
   return (
-    <aside className="flex min-h-[600px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03]">
+    <aside className="flex min-h-[520px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] lg:min-h-[calc(100vh-150px)]">
       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">App preview</p>
-          <p className="mt-1 text-xs text-zinc-500">v{activeVersion.sequence} · {activeVersion.spec.title}</p>
+          <p className="mt-1 text-xs text-zinc-500">v{activeVersion.sequence} · {activeVersion.spec.template === "custom" ? "生成应用" : activeVersion.spec.title}</p>
         </div>
         <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-xs text-emerald-100">Sandboxed</span>
       </div>
       <div className="flex gap-1 border-b border-white/10 px-3 pt-2">
         {(["preview", "code", "spec"] as PreviewTab[]).map((item) => (
-          <button className={`rounded-t-lg px-3 py-2 text-xs font-medium ${tab === item ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`} key={item} onClick={() => setTab(item)} type="button">{item === "preview" ? "预览" : item === "code" ? "代码" : "规格"}</button>
+          <button className={`rounded-t-lg px-3 py-2 text-xs font-medium ${tab === item ? "bg-white/[0.08] text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`} key={item} onClick={() => setTab(item)} type="button">{item === "preview" ? "预览" : item === "code" ? "代码" : "文件"}</button>
         ))}
       </div>
       {tab === "preview" ? <SandboxPreview key={activeVersion.id} projectID={project.id} projectName={project.name} version={activeVersion} /> : null}
@@ -744,9 +744,9 @@ function SandboxPreview({ projectID, projectName, version }: { projectID: string
   }, [postInit, projectID, version.id]);
 
   return (
-    <div className="relative min-h-[430px] flex-1">
+    <div className="relative min-h-[520px] flex-1 lg:min-h-[620px]">
       <iframe
-        className="min-h-[430px] w-full border-0 bg-white"
+        className="h-[520px] min-h-[520px] w-full border-0 bg-white lg:h-[calc(100vh-320px)] lg:min-h-[620px]"
         onLoad={postInit}
         ref={frameRef}
         sandbox="allow-scripts"

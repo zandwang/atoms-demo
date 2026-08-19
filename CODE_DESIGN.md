@@ -6,7 +6,7 @@
 
 ## 1. 设计目标
 
-构建一个本地可运行的 Atoms 风格 Web Demo。用户通过自然语言描述小型单页应用；Go 服务端调用真实模型，把需求转换为受控应用规格，再确定性地编译为可运行的 HTML/CSS/JavaScript，并在隔离预览中执行。用户可继续迭代，并在刷新或重启本地服务后找回工作区、项目、对话、版本及预览运行数据。
+构建一个本地可运行的 Atoms 风格 Web Demo。用户通过自然语言描述任意小型单页应用；Go 服务端调用真实模型，把需求转换为受约束的 HTML/CSS/JavaScript 文件集合，在隔离预览中执行。用户可继续迭代，并在刷新或重启本地服务后找回工作区、项目、对话、版本及预览运行数据。
 
 最终交付物是一个 Go 可执行程序：启动后同时提供 API、SQLite 数据持久化和已构建的前端静态资源。Node.js 只在前端开发/构建阶段使用，不是运行时依赖。
 
@@ -18,21 +18,15 @@
 
 ## 2. 范围与边界
 
-### 2.1 首版支持的应用类型
+### 2.1 首版支持的应用范围
 
-首版仅生成以下受控的小型单页应用。模型从用户描述中选择最适合的模板，并可调整标题、文案、配色、字段和可选能力。
+首版支持用户描述任意“小型单页应用”，例如计时器、计算器、表单、记账、计划、看板和数据展示工具。模型不再从固定模板列表中选择，而是返回最多三个受约束文件：`index.html`、`styles.css`、`app.js`。
 
-| 模板 | 必备真实交互 | 可调整项 |
-| --- | --- | --- |
-| `todo` 待办清单 | 新增、完成、删除、筛选 | 分类、优先级、空状态文案、主题 |
-| `notes` 笔记板 | 新增、编辑、删除、搜索 | 标签、卡片样式、排序、主题 |
-| `habits` 习惯打卡 | 新增习惯、每日打卡、连续天数、删除 | 图标、目标频率、主题、提示文案 |
-
-不支持任意框架代码、后端业务逻辑、外部网络请求、登录、支付、多页面路由或多人协作。若用户请求超出范围，Agent 要明确说明，并将其收敛为最接近的可实现模板。
+不支持后端业务逻辑、数据库、登录、支付、外部网络请求、多页面路由、构建工具、第三方依赖或多人协作。为保证稳定性，限制文件数量、文件大小、执行能力和输入上下文；超出边界时明确拒绝或要求用户缩小范围。
 
 ### 2.2 已确认约束
 
-- 使用 `.env` 中的 API 地址与密钥调用真实模型；密钥仅保留在 Go 服务端。
+- 每位用户在当前浏览器标签页中配置 OpenAI-compatible endpoint、model 和 API Key；服务端仅在单次请求内存中使用，不持久化或共享凭据。
 - 首次使用以本地昵称创建工作区，不做邮箱注册。
 - 首版先保证本地单二进制 Demo；用户已确认进行小规模线上验收，线上部署仍不承诺正式账号、跨设备同步或生产级持久化。
 - 延展能力固定为“版本历史与回滚”。
@@ -76,10 +70,10 @@
 │  ├─ Session / Project / Version HTTP API                          │
 │  ├─ Generation SSE Handler                                        │
 │  ├─ Model Adapter → OpenAI-compatible API                         │
-│  ├─ AppSpec Validator + Deterministic Compiler                    │
+│  ├─ Generated Files Validator + Preview Artifact Builder          │
 │  └─ SQLite Repository + Migrations                                │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTPS；仅此处使用 API Key
+                             │ HTTPS；请求内临时使用用户 API Key
                              ▼
                       配置的模型 API
 
@@ -91,16 +85,16 @@
 
 服务端是数据真相来源：前端不直接写浏览器数据库。这样可以让本地 Demo 的持久化、版本回滚、会话隔离和日后的线上迁移遵循同一套 API。
 
-## 5. 核心设计：受控规格生成与确定性编译
+## 5. 核心设计：受约束文件生成与安全预览
 
-模型不直接返回和执行任意 JavaScript。它返回满足严格 JSON 结构的 `AgentResult`，其中 `AppSpec` 只能选择预定义模板和白名单配置。Go 编译器将该规格转换为最终 HTML/CSS/JavaScript artifact。
+模型不直接返回裸文本并立即执行。它返回满足严格 JSON 结构的 `AgentResult`，其中包含计划、用户可读说明和三个文件的受约束内容。Go 服务端对文件名、大小、危险 API、外部资源和 HTML 结构进行校验，再拼装为预览 artifact。
 
 ```text
 用户需求
   → Go Agent Service
-  → LLM 生成 { plan, assistantMessage, appSpec }
-  → JSON 解码 + Schema/业务校验
-  → Go Template Compiler
+  → LLM 生成 { plan, assistantMessage, files }
+  → JSON 解码 + 文件/安全校验
+  → Preview Artifact Builder
   → CompiledArtifact { entryHtml, html, css, js, manifest }
   → 沙箱 iframe 预览 + 代码查看
 ```
@@ -110,23 +104,31 @@
 工作台会显示三个层次：
 
 1. Agent 计划：解释它将生成什么；
-2. 应用规格：受控 JSON，便于理解和迭代；
+2. 文件摘要：生成文件、大小和校验结果，便于理解和迭代；
 3. 已编译代码：实际在预览中运行的 HTML/CSS/JavaScript。
 
 ## 6. 领域模型与 SQLite 持久化
 
 ### 6.1 Go 领域对象
 
-服务端领域对象使用强类型结构体；来自模型的 JSON 先解码到 `json.RawMessage`，再按 `template` 判别字段并校验。所有数据库时间以 UTC RFC3339 格式保存，API 响应以 JSON 返回。
+服务端领域对象使用强类型结构体；来自模型的 JSON 以严格模式解码，不接受未知字段。所有数据库时间以 UTC RFC3339 格式保存，API 响应以 JSON 返回。
 
 ```go
 type AppTemplate string
 
 const (
-	TemplateTodo   AppTemplate = "todo"
-	TemplateNotes  AppTemplate = "notes"
-	TemplateHabits AppTemplate = "habits"
+	TemplateCustom AppTemplate = "custom"
 )
+
+type GeneratedFiles struct {
+	HTML string `json:"indexHtml"`
+	CSS  string `json:"stylesCss"`
+	JS   string `json:"appJs"`
+}
+
+type AppSpec struct {
+	Files *GeneratedFiles
+}
 
 type Project struct {
 	ID              string    `json:"id"`
@@ -151,7 +153,7 @@ type GenerationVersion struct {
 }
 ```
 
-示例仅说明模型边界；具体实现中 `AppSpec` 将是 `TodoSpec`、`NotesSpec`、`HabitsSpec` 的判别联合，不能用无约束 `map[string]any` 代替。
+`AppSpec` 对外编码为 `{schemaVersion: 1, template: "custom", files: {...}}`。代码中暂时保留旧版 `TodoSpec`、`NotesSpec`、`HabitsSpec` 的反序列化与编译能力，仅用于读取现有 SQLite 历史版本；模型 prompt 和新生成链路只产生 `custom` 文件规格。完成数据迁移前不能删除这层兼容代码。
 
 ### 6.2 数据库表
 
@@ -186,6 +188,7 @@ type GenerationVersion struct {
 
 ```dotenv
 ATOMS_DATA_DIR=./data
+ATOMS_MODEL_TIMEOUT=120s
 # 仅本地/受信环境需要连接 localhost、私网或内网自部署模型时启用
 ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
 ```
@@ -193,6 +196,8 @@ ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
 每位用户在前端自行填写 OpenAI-compatible `endpoint`、`model` 和 `API Key`；三项仅保存在当前标签页的 `sessionStorage`，每次生成时分别通过 `X-Model-Base-URL`、`X-Model-Name`、`X-Model-API-Key` 请求头发送给 Go 服务端。服务端只在该次请求的内存中使用它们，不写入 SQLite、Cookie、日志或响应。关闭标签页后浏览器自动清除配置。
 
 endpoint 必须是绝对 `http`/`https` URL，不能包含 userinfo、query 或 fragment；默认拒绝 localhost、回环、链路本地、私网和保留地址，服务端通过 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=true` 才允许受信本地/内网部署。服务端不使用代理环境变量访问用户 endpoint，以减少绕过地址校验的风险。健康检查只报告服务是否可接受 BYOK 请求，绝不输出 endpoint、请求头或上游认证响应内容。`.env` 不提交；另提供不含真实值的 `.env.example`。
+
+通用应用需要模型返回完整 HTML/CSS/JavaScript，响应通常比旧规格更大，因此模型调用默认超时为 120 秒。部署者可通过 `ATOMS_MODEL_TIMEOUT` 使用 Go duration 格式在 10 秒到 10 分钟之间调整；非法值应使服务启动失败，而不是静默回退。
 
 ### 7.2 HTTP API
 
@@ -235,7 +240,7 @@ PUT    /api/projects/{projectID}/versions/{versionID}/preview-state
 
 ```json
 {
-  "userRequest": "做一个深色主题的待办清单，包含工作和生活分类"
+  "userRequest": "做一个可开始、暂停和重置的番茄钟"
 }
 ```
 
@@ -267,24 +272,32 @@ SSE handler 使用 `http.NewResponseController(w).Flush()` 及时发送真正的
 {
   "plan": {
     "summary": "…",
-    "steps": ["…", "…"],
-    "selectedTemplate": "todo"
+    "steps": ["…", "…"]
   },
   "assistantMessage": "…",
-  "appSpec": { "schemaVersion": 1, "template": "todo", "…": "…" }
+  "appSpec": {
+    "schemaVersion": 1,
+    "template": "custom",
+    "files": {
+      "indexHtml": "<main>…</main>",
+      "stylesCss": "body { … }",
+      "appJs": "document.…"
+    }
+  }
 }
 ```
 
-模型适配器优先请求 JSON Schema / structured output；若配置的兼容接口不支持该参数，才退回 JSON-object 模式，并以 `json.Decoder.DisallowUnknownFields`、大小限制和二次业务校验拒绝额外或错误字段。不要接受 Markdown 围栏、HTML、裸脚本或未校验的 JSON Patch。
+模型适配器优先请求 JSON object 模式；若配置的兼容接口不支持该参数，则重试普通 Chat Completions，并始终以 `json.Decoder.DisallowUnknownFields`、大小限制和二次业务校验拒绝额外或错误字段。不要接受 Markdown 围栏、JSON 之外的裸文本或未校验的 JSON Patch。
 
 每个 `AppSpec` 的校验至少覆盖：
 
 - `schemaVersion` 固定为 `1`；
-- `template` 只能是 `todo`、`notes`、`habits`；
-- 应用名、文案、标签、示例数据数量和字符串长度均有限制；
-- 所有颜色、密度、卡片样式、功能开关均为枚举白名单；
-- 迭代请求返回完整新规格，并以当前版本作为 `parent_version_id`；
-- 完全超范围的需求返回 `UNSUPPORTED_REQUEST`，不生成误导性的假应用。
+- `template` 固定为 `custom`，文件名固定为 `index.html`、`styles.css`、`app.js` 对应的三个字段；
+- HTML 必填且不超过 60 KiB，CSS 不超过 60 KiB，JavaScript 不超过 100 KiB；
+- 拒绝外部脚本/样式、iframe、网络 API、Cookie、父窗口导航以及可逃逸 `<style>`/`<script>` 容器的内容；
+- 不支持后端、数据库、登录、支付、多页面、第三方依赖、外部资源或网络请求；
+- 迭代请求携带当前完整文件并返回完整新文件，以当前版本作为 `parent_version_id`，不接受 patch；
+- 超出能力边界的需求应在模型回复中解释并收敛，若输出仍不合法则返回 `MODEL_OUTPUT_INVALID`。
 
 ### 7.5 Model Adapter
 
@@ -302,14 +315,14 @@ type ModelAdapter interface {
 
 System Prompt 必须：
 
-- 说明三种受支持模板及其交互边界；
-- 要求只返回已定义 JSON 结构；
-- 要求超范围需求收敛为最接近的单页应用；
-- 禁止输出 HTML、Markdown、脚本、外部 URL、密钥或声称运行了不存在的工具；
-- 在迭代模式根据当前 `AppSpec` 输出完整新规格，而不是局部 patch；
+- 说明通用小型单页应用的能力和非目标；
+- 要求只返回已定义 JSON 结构，其中 HTML/CSS/JavaScript 分别放入固定文件字段；
+- 要求超范围需求缩小为可离线运行的小型单页应用；
+- 禁止后端、外部 URL、网络 API、第三方依赖、密钥或声称运行了不存在的工具；
+- 在迭代模式根据当前 `AppSpec` 输出完整新文件，而不是局部 patch；
 - 使用简短中文撰写面向用户的计划和说明。
 
-用户输入始终是不可信需求文本，不能覆盖系统边界。应用名称、标签和文案通过结构校验，再以安全编码形式进入编译器。
+用户输入、项目名、历史对话和当前应用文本始终是不可信上下文，不能覆盖系统边界。模型结果必须再次经过服务端文件与能力校验。
 
 ## 8. Go 编译器与安全预览
 
@@ -325,15 +338,15 @@ type CompiledArtifact struct {
 }
 ```
 
-编译器由 `CompileTodo`、`CompileNotes`、`CompileHabits` 三个纯函数构成。它们使用固定 HTML/CSS/JS 模板，把已校验的数据以 JSON 注入 `<script type="application/json">` 节点；Go 的 `encoding/json` 默认转义 `<`、`>`、`&`，模板文本再经 `html/template` 语义转义。任何用户/模型文本都不能被拼接成可执行 JavaScript。
+新生成链路由 `CompileGenerated` 纯函数构成。它在文件校验通过后注入 CSP、状态桥接脚本和生成的 HTML/CSS/JavaScript，得到完整 `srcDoc`。旧版三个固定模板编译器只为历史版本兼容保留，不再由模型选择。
 
 每个 artifact 都包含：
 
 - `entryHtml`：完整 `srcDoc`，供 iframe 直接加载；
 - `html`、`css`、`js`：供“代码”面板查看；
-- `manifest`：模板类型、支持的交互动作和 SHA-256 checksum。
+- `manifest`：产物类型、通用交互标记和 SHA-256 checksum。
 
-预览中的待办、笔记或习惯功能是真实客户端逻辑，不是截图或录制动画。
+预览中的功能由本次模型生成的客户端逻辑真实驱动，不是截图、录制动画或从固定业务模板中选择。
 
 ### 8.2 iframe 隔离与状态桥接
 
@@ -345,13 +358,13 @@ Parent → iframe: preview:restore { versionId, state }
 ```
 
 - iframe 使用 `sandbox="allow-scripts"`，不授予 `allow-same-origin`、表单、弹窗、下载或导航权限。
-- artifact 无外链脚本、无网络请求、无 `eval`、无 parent DOM 访问。
-- iframe 只通过 `postMessage` 回传模板专属运行态；前端验证 `event.source`、`versionId` 和运行态 schema 后，调用 Go API 持久化。
+- artifact 无外链脚本或网络请求，不能访问 parent DOM；生成脚本仍按不可信代码对待。
+- iframe 只通过 `postMessage` 回传不超过 64 KiB 的 JSON object 运行态；前端验证 `event.source` 和 `versionId` 后，Go API 再验证对象与项目归属并持久化。
 - Go API 用当前 session 和项目归属再次验证，再写入 `preview_states`。
 - 重新打开项目或切换版本时，前端从 API 读取状态并回传 iframe 恢复。
-- `srcDoc` 追加 CSP：只允许模板控制的内联样式和脚本，不允许网络连接、frame 嵌套或外部资源。
+- `srcDoc` 追加 CSP：只允许内联样式、内联脚本和 data URL 图片，不允许网络连接、frame 嵌套或外部资源。
 
-这让生成应用自身的数据也可持久化，同时它无法接触 Cookie、SQLite、API Key 或主工作台的同源内容。
+这让生成应用主动调用 `window.atomsPreview.publish(state)` 时可以持久化自身运行态，同时它无法接触 Cookie、SQLite、API Key 或主工作台的同源内容。当前危险能力检查是 Demo 级字符串校验，不是完整 JavaScript 静态分析；opaque-origin iframe sandbox 与 CSP 才是主要运行时边界。
 
 ## 9. React 前端设计与 Go 静态嵌入
 
@@ -363,7 +376,7 @@ Parent → iframe: preview:restore { versionId, state }
 └─ 已初始化：Workspace
    ├─ 左栏：品牌、创建项目、项目列表、当前用户
    ├─ 中栏：项目标题、对话记录、Agent 阶段、提示词输入区
-   └─ 右栏：预览 / 代码 / 规格 / 版本历史
+   └─ 右栏：预览 / 代码 / 文件 / 版本历史
 ```
 
 桌面端为三栏布局。窄屏时项目栏保留，中央工作区与右栏内容折叠为标签页；首次初始化、创建项目、生成、预览、迭代与回滚在移动宽度下仍可完成。
@@ -377,7 +390,7 @@ Parent → iframe: preview:restore { versionId, state }
 - 通过 `fetch()` 消费生成 API 的 POST SSE 流，更新短暂的生成状态；
 - 收到 `result` 后重新拉取该项目/版本，避免客户端自行拼装持久化对象；
 - iframe 的运行态通过 API 写入，而不是 `localStorage`；
-- API 使用同源 Cookie，不需要浏览器保存或处理模型 Key。
+- API 使用同源 Cookie；模型 endpoint、model 和 API Key 只保存在当前标签页 `sessionStorage`，生成时随请求发送。
 
 ### 9.3 关键组件
 
@@ -456,9 +469,10 @@ ready  ─ submit iteration → requesting_model
 │  │  └─ prompt.go
 │  ├─ compiler/
 │  │  ├─ compile.go
-│  │  ├─ todo.go
-│  │  ├─ notes.go
-│  │  └─ habits.go
+│  │  ├─ generic.go          # 新生成链路
+│  │  ├─ todo.go             # 旧版本兼容
+│  │  ├─ notes.go            # 旧版本兼容
+│  │  └─ habits.go           # 旧版本兼容
 │  ├─ store/
 │  │  ├─ repository.go
 │  │  ├─ sqlite/
@@ -506,7 +520,7 @@ web → HTTP API（不导入 Go 内部实现）
 | `AUTH_ERROR` | 上游拒绝用户凭据 | 提示检查用户自己的 API Key | 更新后重试 |
 | `UPSTREAM_TIMEOUT` | 模型超时/网络失败 | 保留请求和项目，提供重试 | 是 |
 | `MODEL_OUTPUT_INVALID` | 结果不符合受控规格 | 告知未生成可用应用 | 是 |
-| `UNSUPPORTED_REQUEST` | 无法映射到三模板 | 解释当前范围并建议改写 | 是 |
+| `UNSUPPORTED_REQUEST` | 需求超出小型离线单页应用边界 | 解释当前范围并建议缩小需求 | 是 |
 | `PREVIEW_STATE_INVALID` | iframe 回传非法状态 | 不保存非法数据，提示刷新预览 | 是 |
 | `NOT_FOUND` / `FORBIDDEN` | ID 不存在或不属于当前工作区 | 返回通用错误，避免数据泄漏 | 视情况 |
 
@@ -515,6 +529,7 @@ web → HTTP API（不导入 Go 内部实现）
 - 用户 endpoint、model、API Key、授权头、Cookie token 和上游原始响应不得写入日志、错误消息或数据库；三项模型配置只允许存在于当前标签页 `sessionStorage` 和单次 Go 请求内存中。
 - 用户 endpoint 必须通过 scheme、userinfo、query、fragment、主机地址和 DNS 解析校验；默认拒绝 loopback、私网、链路本地、未指定和保留地址。允许私网时必须由部署者显式打开 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS`，且不建议在公开服务启用。
 - 模型请求使用 `context.WithTimeoutCause`；错误判断使用 `errors.Is` / `errors.AsType`，保留根因但不向用户暴露敏感细节。
+- 生成链路记录项目/尝试 ID、阶段、耗时、错误码、上游 HTTP 状态和脱敏网络原因，不记录用户需求正文、endpoint、model、凭据或上游响应体。
 - 生成 API 限制请求体、字符串长度、会话上下文数量和并发数；同一 session 同时只允许一个运行中的生成。
 - 所有数据库写入使用参数化查询；所有归属查询都绑定 workspace ID。
 - 删除项目需要前端确认；删除本地 SQLite 数据不可恢复，版本回滚永不删除历史。
@@ -524,8 +539,8 @@ web → HTTP API（不导入 Go 内部实现）
 
 ### 12.1 Go 单元与集成测试
 
-- `domain`：三种 `AppSpec` 的合法输入、未知枚举、超长文案、错误版本与非法运行态。
-- `compiler`：每个模板生成完整 artifact、checksum 稳定、无外部脚本与网络调用。
+- `domain`：custom 文件协议的严格输入、未知字段、超长文件、危险能力、错误版本与通用运行态；旧模板兼容仍有回归测试。
+- `compiler`：生成文件编译为完整 artifact、checksum 稳定、无外部脚本与网络调用。
 - `agent`：OpenAI 请求构造、JSON 解码、错误映射、structured-output 回退；使用 mock `http.RoundTripper`，绝不访问真实 Key。
 - `store/sqlite`：migration、workspace 隔离、项目 CRUD、保存版本、回滚、级联删除与运行态恢复。
 - `app`：使用 `httptest` 覆盖 Cookie 会话、路径参数、JSON 错误 envelope、SSE 事件顺序、版本恢复和预览状态 API。
@@ -535,7 +550,7 @@ web → HTTP API（不导入 Go 内部实现）
 ### 12.2 前端与 E2E 测试
 
 1. 首次进入输入昵称，创建项目。
-2. 使用 fake model adapter 输入“做一个待办应用”，得到可交互预览。
+2. 使用 fake model adapter 输入“做一个番茄钟”，得到可交互预览。
 3. 在 iframe 新增、完成、删除项目；刷新页面后状态仍恢复。
 4. 迭代当前项目，版本数增加且新版本成为 active version。
 5. 从历史版本回滚，预览和 active version 一致。
@@ -550,8 +565,8 @@ web → HTTP API（不导入 Go 内部实现）
 | --- | --- | --- |
 | 1. Go 工程骨架 | `go.mod`、配置、`net/http`、健康检查、SQLite migration、React/Vite shell | Go API 可启动；缺配置时给出明确提示 |
 | 2. 本地工作区 | session Cookie、Onboarding、项目 CRUD、SQLite repository | 重启服务和刷新浏览器后昵称、项目仍存在 |
-| 3. 生成最短链路 | Agent adapter、SSE、todo compiler、iframe 预览 | 一条真实模型请求可生成待办应用与代码 |
-| 4. 模板与迭代 | notes/habits、当前规格迭代、错误处理 | 三模板可生成；失败请求可重试 |
+| 3. 生成最短链路 | Agent adapter、SSE、通用文件编译、iframe 预览 | 一条真实模型请求可生成任意受约束小型 SPA 与代码 |
+| 4. 通用迭代 | 当前完整文件、文件安全校验、错误处理 | 可基于当前应用自然语言修改；失败请求可重试 |
 | 5. 版本与运行态 | 版本历史、回滚、iframe 状态桥接 | 刷新、重启、回滚后数据一致 |
 | 6. 打磨与测试 | 响应式界面、Go/前端测试、README、验收脚本 | P0/P1 用例全部通过，`make build` 产出单二进制 |
 
@@ -563,7 +578,7 @@ web → HTTP API（不导入 Go 内部实现）
 | --- | --- |
 | 可运行 Atoms Demo | Go 单体服务 + 嵌入式 React 静态资源 + 本地启动流程 |
 | 智能体驱动代码/应用生成 | Go Agent Service → `AppSpec` → `CompiledArtifact` |
-| 可视化网页展示 | sandbox iframe 运行生成应用；预览/代码/规格切换 |
+| 可视化网页展示 | sandbox iframe 运行生成应用；预览/代码/文件切换 |
 | 真实交互 | 工作台会话、真实 SSE 阶段、预览内 CRUD/搜索/打卡 |
 | 数据持久化 | SQLite 保存工作区、项目、消息、尝试、版本及预览运行态 |
 | 初始化/注册与核心流程 | 昵称 onboarding → Cookie session → 项目 → 生成 → 迭代 |

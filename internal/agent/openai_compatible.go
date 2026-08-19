@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -122,7 +123,11 @@ func (a *OpenAICompatibleAdapter) request(ctx context.Context, messages []chatMe
 			return "", 0, adapterError
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return "", 0, &Error{Code: ErrorUpstreamTimeout, Message: "模型响应超时，请重试。", Retryable: true, Cause: err}
+			cause := err
+			if contextCause := context.Cause(ctx); contextCause != nil {
+				cause = contextCause
+			}
+			return "", 0, &Error{Code: ErrorUpstreamTimeout, Message: "模型响应超时，请重试。", Retryable: true, Cause: cause}
 		}
 		return "", 0, &Error{Code: ErrorUpstreamUnavailable, Message: "模型服务暂时不可用，请稍后重试。", Retryable: true, Cause: err}
 	}
@@ -132,11 +137,12 @@ func (a *OpenAICompatibleAdapter) request(ctx context.Context, messages []chatMe
 		// Deliberately consume only a bounded amount and never expose or log it:
 		// upstream bodies can contain provider-specific details.
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxModelResponseSize))
+		statusCause := fmt.Errorf("upstream returned HTTP status %d", response.StatusCode)
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-			return "", response.StatusCode, &Error{Code: ErrorAuth, Message: "模型服务拒绝了这个 API Key，请更新后重试。", Retryable: true}
+			return "", response.StatusCode, &Error{Code: ErrorAuth, Message: "模型服务拒绝了这个 API Key，请更新后重试。", Retryable: true, UpstreamStatus: response.StatusCode, Cause: statusCause}
 		}
 		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= http.StatusInternalServerError {
-			return "", response.StatusCode, &Error{Code: ErrorUpstreamUnavailable, Message: "模型服务暂时不可用，请稍后重试。", Retryable: true}
+			return "", response.StatusCode, &Error{Code: ErrorUpstreamUnavailable, Message: "模型服务暂时不可用，请稍后重试。", Retryable: true, UpstreamStatus: response.StatusCode, Cause: statusCause}
 		}
 		// A few compatible APIs reject JSON mode with 400 or 422. Only that
 		// first, optional feature probe gets a fallback; all other client-side
@@ -144,7 +150,7 @@ func (a *OpenAICompatibleAdapter) request(ctx context.Context, messages []chatMe
 		if useJSONMode && (response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity) {
 			return "", response.StatusCode, nil
 		}
-		return "", response.StatusCode, &Error{Code: ErrorUpstreamUnavailable, Message: "模型接口拒绝了请求，请检查本地配置后重试。", Retryable: true}
+		return "", response.StatusCode, &Error{Code: ErrorUpstreamUnavailable, Message: "模型接口拒绝了请求，请检查本地配置后重试。", Retryable: true, UpstreamStatus: response.StatusCode, Cause: statusCause}
 	}
 
 	var decoded chatCompletionResponse

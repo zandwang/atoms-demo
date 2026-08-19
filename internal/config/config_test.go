@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestReadEnvFile(t *testing.T) {
@@ -62,5 +63,30 @@ func TestLoadUsesPlatformPortWhenAddressIsUnset(t *testing.T) {
 	}
 	if cfg.Address != ":10000" {
 		t.Fatalf("Address = %q, want :10000", cfg.Address)
+	}
+}
+
+func TestLoadModelTimeout(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(filename, []byte("ATOMS_MODEL_TIMEOUT=3m\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GenerationTimeout() != 3*time.Minute {
+		t.Fatalf("GenerationTimeout() = %s, want 3m", cfg.GenerationTimeout())
+	}
+}
+
+func TestModelTimeoutDefaultsAndRejectsInvalidValues(t *testing.T) {
+	if got := (Config{}).GenerationTimeout(); got != 120*time.Second {
+		t.Fatalf("zero Config GenerationTimeout() = %s, want 2m", got)
+	}
+	for _, value := range []string{"invalid", "5s", "11m"} {
+		if _, err := modelTimeoutFromEnv(value); err == nil {
+			t.Fatalf("modelTimeoutFromEnv(%q) accepted invalid value", value)
+		}
 	}
 }
