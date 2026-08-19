@@ -23,12 +23,17 @@ type Config struct {
 	Address                   string
 	DataDir                   string
 	ModelTimeout              time.Duration
+	ModelBaseURL              string
+	ModelName                 string
+	ModelAPIKey               string
 	AllowPrivateModelEndpoint bool
 }
 
 // ModelStatus is safe to expose through health and diagnostics endpoints.
 type ModelStatus struct {
-	Available bool `json:"available"`
+	Available                 bool `json:"available"`
+	DefaultProviderConfigured bool `json:"defaultProviderConfigured"`
+	DefaultConfigured         bool `json:"defaultConfigured"`
 }
 
 // Load reads a local dotenv file when present. Values already present in the process environment take precedence.
@@ -54,6 +59,9 @@ func Load(envFile string) (Config, error) {
 		Address:                   addressFromEnv(lookup),
 		DataDir:                   valueOrDefault(lookup("ATOMS_DATA_DIR"), defaultDataDir),
 		ModelTimeout:              modelTimeout,
+		ModelBaseURL:              strings.TrimSpace(lookup("OPENAI_BASE_URL")),
+		ModelName:                 strings.TrimSpace(lookup("OPENAI_MODEL")),
+		ModelAPIKey:               strings.TrimSpace(lookup("OPENAI_API_KEY")),
 		AllowPrivateModelEndpoint: parseBool(lookup("ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS")),
 	}, nil
 }
@@ -95,7 +103,11 @@ func addressFromEnv(lookup func(string) string) string {
 
 // ModelStatus reports whether the server supports request-scoped BYOK settings.
 func (c Config) ModelStatus() ModelStatus {
-	return ModelStatus{Available: true}
+	return ModelStatus{
+		Available:                 true,
+		DefaultProviderConfigured: strings.TrimSpace(c.ModelBaseURL) != "" && strings.TrimSpace(c.ModelName) != "",
+		DefaultConfigured:         strings.TrimSpace(c.ModelBaseURL) != "" && strings.TrimSpace(c.ModelName) != "" && strings.TrimSpace(c.ModelAPIKey) != "",
+	}
 }
 
 func parseBool(value string) bool {

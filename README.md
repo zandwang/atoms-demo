@@ -19,11 +19,14 @@
 
 ## 配置与启动
 
-1. 以 `.env.example` 为参考创建 `.env`。不要提交 `.env`。模型 endpoint、model 和 API Key 都由每位用户在浏览器中自行设置，不放入 `.env`。
+1. 以 `.env.example` 为参考创建 `.env`。不要提交 `.env`。可在其中配置部署者共用的默认模型；浏览器端配置是可选覆盖项。
 
    ```dotenv
    ATOMS_ADDR=:8080
    ATOMS_DATA_DIR=./data
+   OPENAI_BASE_URL=https://provider.example/v1
+   OPENAI_MODEL=your-model
+   OPENAI_API_KEY=your-key
    ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
    ```
 
@@ -39,7 +42,7 @@
    make run
    ```
 
-4. 在浏览器访问 <http://localhost:8080>，输入昵称并在右上角设置自己的 endpoint、model 和 API Key，然后创建项目并描述一个小型单页应用，例如“做一个可开始、暂停和重置的番茄钟”。三项模型配置仅保存在当前浏览器标签页中。
+4. 在浏览器访问 <http://localhost:8080>，输入昵称、创建项目并描述一个小型单页应用，例如“做一个可开始、暂停和重置的番茄钟”。没有浏览器覆盖配置时会使用 `.env` 的默认模型。用户也可在右上角填写自己的 API Key 或完整 endpoint、model、API Key 覆盖配置；覆盖值只保存在当前浏览器标签页中。
 
 构建后的 `bin/atoms-demo` 不需要 Node.js 运行。默认数据库位于 `./data/atoms-demo.db`；可使用 `ATOMS_DATA_DIR` 指定其他本地目录，使用 `ATOMS_ADDR` 修改监听地址。
 部署平台提供 `PORT` 且未设置 `ATOMS_ADDR` 时，服务会自动监听 `:${PORT}`。
@@ -52,7 +55,7 @@ cd web && npm run build
 make build
 ```
 
-测试覆盖生成文件校验、模型协议回退、SSE、SQLite 隔离、通用应用版本恢复和预览状态校验。真实模型调用使用用户请求头中的 API Key，不会出现在自动测试中；服务端不会保存或返回 API Key。
+测试覆盖生成文件校验、模型配置覆盖、SSE、SQLite 隔离、通用应用版本恢复和预览状态校验。真实模型调用可使用 `.env` 默认 Key 或用户请求头中的覆盖 Key；服务端不会保存或返回 API Key。
 
 ## 模型调用排查
 
@@ -66,7 +69,7 @@ make build
 
 这是 Demo 级隔离，不是完整的 JavaScript 静态分析或生产级恶意代码执行平台。主要运行时边界是 opaque-origin iframe sandbox 与 CSP；公开服务仍需要增加限流、资源配额和更强的内容审查。单个生成版本最多包含约 60 KiB HTML、60 KiB CSS 和 100 KiB JavaScript，不支持后端、数据库、登录、支付、多页面、第三方依赖、外部资源或网络请求。旧版 `todo`、`notes`、`habits` 规格仅为读取已有 SQLite 历史版本保留，新生成不会再选择这些模板。
 
-当前仍使用匿名 workspace，不含真实邮箱注册、登录恢复、公开分享、多设备同步、支付或任意多页应用。每位用户自行提供模型 endpoint、model 和 API Key；三项配置只在当前标签页和单次生成请求中使用，服务端不保存。服务端默认拒绝私网 endpoint，公开部署时不要打开私网放行开关。版本数据和预览状态保存在服务端 SQLite，删除项目不可恢复；公开部署时需要持久化磁盘或迁移到托管数据库。
+当前仍使用匿名 workspace，不含真实邮箱注册、登录恢复、公开分享、多设备同步、支付或任意多页应用。部署者可通过 `.env` 提供默认 endpoint、model 和 API Key；用户覆盖配置只在当前标签页和单次生成请求中使用，服务端不保存。自定义 endpoint 必须附带用户自己的 model 和 API Key，服务端默认 Key 不会发送到用户控制的 endpoint。公开部署若启用共享默认 Key，应增加限流、额度控制与滥用防护。服务端默认拒绝私网 endpoint，公开部署时不要打开私网放行开关。版本数据和预览状态保存在服务端 SQLite，删除项目不可恢复；公开部署时需要持久化磁盘或迁移到托管数据库。
 
 ## 项目文档
 

@@ -6,10 +6,10 @@
 
 | 项目 | 状态 | 说明 |
 | --- | --- | --- |
-| 最后更新 | 2026-08-19 | 已扩大右侧应用预览区域并完成前端构建验证 |
+| 最后更新 | 2026-08-19 | 已恢复 `.env` 默认模型配置，并完成安全的用户覆盖优先级 |
 | 当前阶段 | M3/M4 通用生成、迭代与兼容收尾 | 进行中 |
-| 当前阻塞项 | 无 | 预览区域已扩大；模型超时配置和诊断日志已完成 |
-| 下一步 | 重启服务完成真实模型生成验收，并确认大预览区下的应用交互 | 先保持历史 SQLite 版本可读取 |
+| 当前阻塞项 | 无 | 正在恢复服务端默认模型配置，并保留用户覆盖能力 |
+| 下一步 | 使用默认配置和用户覆盖各完成一次真实生成验收，再提交部署 | 先保持历史 SQLite 版本可读取 |
 | 本地运行目标 | Go 单二进制 | React 仅为构建期依赖 |
 
 ## 状态标记
@@ -95,7 +95,7 @@
 - [x] 覆盖模型超时、无效输出、配置错误、项目归属和预览状态异常。
 - [x] 编写 README：依赖、环境变量、启动、构建、测试、演示步骤和已知限制。
 - [ ] 按 [需求分析计划](./REQUIREMENTS_ANALYSIS_PLAN.md) 的端到端验收场景逐条验收。
-- [x] 将模型认证改为 BYOK：用户 Key 仅在标签页和单次服务端请求内存中存在。
+- [x] 支持 `.env` 默认模型认证和用户覆盖：用户 Key 仅在标签页和单次服务端请求内存中存在。
 
 完成条件：所有 P0、选定的 P1（版本历史/回滚）和本地验收场景通过；交付物可由他人依文档启动。
 
@@ -148,6 +148,52 @@
 ```
 
 ## 开发日志
+
+### 2026-08-19 — `.env` 默认模型与安全覆盖 — 已完成
+
+- 完成：
+  - 恢复 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY` 的服务端默认配置读取。
+  - 浏览器无配置时使用完整默认值；只填写 Key 或 model 时按字段覆盖默认值。
+  - 浏览器填写 endpoint 时强制要求用户同时提供 model 和 Key，禁止默认 Key 流向用户控制的 endpoint。
+  - 前端健康状态、生成按钮和模型配置提示改为识别默认配置与部分覆盖状态。
+- 修改：
+  - `internal/config/config.go`、`internal/config/config_test.go` — 默认模型字段、健康布尔状态和读取测试。
+  - `internal/app/generation.go`、`internal/app/server_test.go` — 配置解析和安全覆盖矩阵测试。
+  - `web/src/App.tsx` — 默认模型可用性判断、覆盖配置提示和状态徽标。
+  - `README.md`、`CODE_DESIGN.md`、`REQUIREMENTS_ANALYSIS_PLAN.md` — 同步默认配置与安全边界说明。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test -race ./...` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go vet ./...`、`go mod verify`、`git diff --check` — 通过。
+  - `cd web && npm run build` — 通过。
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache make build` — 通过；Go module stat cache 有非阻断权限警告。
+  - 未记录 `.env` 实际值、API Key、Cookie 或令牌。
+- 未完成或风险：
+  - 尚未使用真实默认配置和真实用户覆盖配置各完成一次端到端生成验收。
+  - 公开部署使用共享默认 Key 时仍需限流、额度和滥用控制。
+- 下次从这里继续：
+  1. 启动服务，验证无浏览器配置、只填 Key、完整自定义 endpoint 三种生成路径。
+  2. 通过真实模型验收后提交并重新部署。
+
+### 2026-08-19 — 生成过程可视化 — 已完成
+
+- 完成：
+  - 将“正在请求模型…”单行提示升级为五步进度时间线：准备上下文、生成应用文件、校验文件、编译预览、保存版本。
+  - 进度面板显示当前需求摘要、真实耗时、当前/完成/等待状态，不使用虚假百分比或模型隐藏思维链。
+  - SSE 新增 `preparing_context` 和 `saving_version` 两个真实服务端阶段；成功后继续展示 Agent plan、完整回复、生成文件和预览。
+- 修改：
+  - `internal/app/generation.go`、`internal/app/server_test.go` — 新阶段事件和 SSE 覆盖。
+  - `web/src/api/client.ts`、`web/src/App.tsx` — 阶段类型、累计状态和响应式进度面板。
+  - `CODE_DESIGN.md` — 明确阶段协议与不展示隐藏思维链的边界。
+- 验证：
+  - `GOCACHE=/private/tmp/atoms-demo-go-build-cache go test ./internal/app` — 通过。
+  - `cd web && npm run build` — 通过。
+  - `git diff --check` — 通过。
+- 未完成或风险：
+  - OpenAI-compatible adapter 当前使用非流式 JSON 响应，因此模型生成阶段无法安全展示部分回复；完整回复在校验和保存成功后展示。
+- 下次从这里继续：
+  1. 重启 `make run`，观察一次约 30–120 秒生成过程中的计时和阶段切换。
+  2. 确认成功后 Agent 回复、计划、代码和预览正常刷新。
 
 ### 2026-08-19 — 右侧预览区扩展 — 已完成
 

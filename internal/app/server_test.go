@@ -43,6 +43,46 @@ func TestHealthReportsBYOKAvailability(t *testing.T) {
 	}
 }
 
+func TestResolveModelConfig(t *testing.T) {
+	defaultConfig := config.Config{
+		ModelBaseURL: "https://default.example/v1",
+		ModelName:    "default-model",
+		ModelAPIKey:  "default-key",
+	}
+	tests := []struct {
+		name    string
+		cfg     config.Config
+		headers map[string]string
+		want    resolvedModelConfig
+		code    string
+	}{
+		{name: "uses complete defaults", cfg: defaultConfig, want: resolvedModelConfig{baseURL: "https://default.example/v1", model: "default-model", apiKey: "default-key"}},
+		{name: "user key overrides default", cfg: defaultConfig, headers: map[string]string{modelAPIKeyHeader: "user-key"}, want: resolvedModelConfig{baseURL: "https://default.example/v1", model: "default-model", apiKey: "user-key"}},
+		{name: "user model overrides default", cfg: defaultConfig, headers: map[string]string{modelNameHeader: "user-model"}, want: resolvedModelConfig{baseURL: "https://default.example/v1", model: "user-model", apiKey: "default-key"}},
+		{name: "complete custom endpoint config", cfg: defaultConfig, headers: map[string]string{modelBaseURLHeader: "https://user.example/v1", modelNameHeader: "user-model", modelAPIKeyHeader: "user-key"}, want: resolvedModelConfig{baseURL: "https://user.example/v1", model: "user-model", apiKey: "user-key"}},
+		{name: "custom endpoint requires key", cfg: defaultConfig, headers: map[string]string{modelBaseURLHeader: "https://user.example/v1", modelNameHeader: "user-model"}, code: "API_KEY_REQUIRED"},
+		{name: "custom endpoint requires model", cfg: defaultConfig, headers: map[string]string{modelBaseURLHeader: "https://user.example/v1", modelAPIKeyHeader: "user-key"}, code: "MODEL_CONFIG_REQUIRED"},
+		{name: "missing endpoint and model", cfg: config.Config{}, code: "MODEL_CONFIG_REQUIRED"},
+		{name: "default provider still needs a key", cfg: config.Config{ModelBaseURL: "https://default.example/v1", ModelName: "default-model"}, code: "API_KEY_REQUIRED"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			headers := make(http.Header)
+			for key, value := range test.headers {
+				headers.Set(key, value)
+			}
+			got, code, _ := resolveModelConfig(test.cfg, headers)
+			if code != test.code {
+				t.Fatalf("code = %q, want %q", code, test.code)
+			}
+			if got != test.want {
+				t.Fatalf("resolved config = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGeneratePlaceholderReturnsConfigurationError(t *testing.T) {
 	handler := newTestHandler(t)
 	cookie := initializeSession(t, handler, "Zand")
@@ -276,7 +316,7 @@ func TestGenerateStreamsStagesAndPersistsVersion(t *testing.T) {
 	if contentType := generationRecorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
 		t.Fatalf("content type = %q", contentType)
 	}
-	for _, event := range []string{"event: stage", "requesting_model", "validating", "compiling", "event: result"} {
+	for _, event := range []string{"event: stage", "preparing_context", "requesting_model", "validating", "compiling", "saving_version", "event: result"} {
 		if !strings.Contains(generationRecorder.Body.String(), event) {
 			t.Fatalf("SSE stream missing %q: %s", event, generationRecorder.Body.String())
 		}

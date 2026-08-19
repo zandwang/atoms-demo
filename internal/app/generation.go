@@ -14,6 +14,7 @@ import (
 
 	"github.com/zand/atoms-demo/internal/agent"
 	"github.com/zand/atoms-demo/internal/compiler"
+	"github.com/zand/atoms-demo/internal/config"
 	"github.com/zand/atoms-demo/internal/domain"
 )
 
@@ -51,27 +52,21 @@ type generationErrorEvent struct {
 func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace domain.Workspace) {
 	model := s.model
 	if model == nil {
-		baseURL := strings.TrimSpace(r.Header.Get(modelBaseURLHeader))
-		modelName := strings.TrimSpace(r.Header.Get(modelNameHeader))
-		apiKey := strings.TrimSpace(r.Header.Get(modelAPIKeyHeader))
-		if baseURL == "" || modelName == "" {
-			writeError(w, http.StatusBadRequest, "MODEL_CONFIG_REQUIRED", "请先设置模型 endpoint 和 model。", false)
+		resolved, code, message := resolveModelConfig(s.config, r.Header)
+		if code != "" {
+			writeError(w, http.StatusBadRequest, code, message, false)
 			return
 		}
-		if apiKey == "" {
-			writeError(w, http.StatusBadRequest, "API_KEY_REQUIRED", "请先设置你自己的模型 API Key。", false)
-			return
-		}
-		if len(baseURL) > maxModelBaseURLLength || len(modelName) > maxModelNameLength || len(apiKey) > maxModelAPIKeyLength {
+		if len(resolved.baseURL) > maxModelBaseURLLength || len(resolved.model) > maxModelNameLength || len(resolved.apiKey) > maxModelAPIKeyLength {
 			writeError(w, http.StatusBadRequest, "BAD_REQUEST", "模型配置格式无效。", false)
 			return
 		}
-		validatedURL, err := agent.ValidateBaseURL(baseURL)
+		validatedURL, err := agent.ValidateBaseURL(resolved.baseURL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, string(agent.ErrorEndpointInvalid), "模型 endpoint 无效，请检查地址后重试。", false)
 			return
 		}
-		model = agent.NewOpenAICompatibleAdapterWithOptions(validatedURL, apiKey, modelName, s.config.AllowPrivateModelEndpoint)
+		model = agent.NewOpenAICompatibleAdapterWithOptions(validatedURL, resolved.apiKey, resolved.model, s.config.AllowPrivateModelEndpoint)
 	}
 
 	var request generateRequest
@@ -123,6 +118,9 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 	)
 
 	prepareSSE(w)
+	if err := writeSSE(w, "stage", generationStageEvent{Status: "preparing_context", Label: "正在整理项目上下文…"}); err != nil {
+		return
+	}
 	if err := writeSSE(w, "stage", generationStageEvent{Status: "requesting_model", Label: "正在请求模型…"}); err != nil {
 		return
 	}
@@ -196,6 +194,9 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 		sendGenerationFailure(s, w, workspace, projectID, attempt.ID, agent.PublicError(err))
 		return
 	}
+	if err := writeSSE(w, "stage", generationStageEvent{Status: "saving_version", Label: "正在保存应用版本…"}); err != nil {
+		return
+	}
 	version, err := s.repository.CompleteGeneration(r.Context(), workspace.ID, projectID, attempt.ID, activeVersionID(currentVersion), result, artifact)
 	if err != nil {
 		s.logger.Error("complete generation failed", "project_id", projectID, "attempt_id", attempt.ID, "error", diagnosticCause(err))
@@ -205,6 +206,47 @@ func (s server) handleGenerate(w http.ResponseWriter, r *http.Request, workspace
 	}
 	s.logger.Info("generation completed", "project_id", projectID, "attempt_id", attempt.ID, "version_id", version.ID, "duration", time.Since(generationStartedAt))
 	_ = writeSSE(w, "result", generationResultEvent{Version: version, Message: result.AssistantMessage})
+}
+
+type resolvedModelConfig struct {
+	baseURL string
+	model   string
+	apiKey  string
+}
+
+// resolveModelConfig applies request-scoped overrides without ever sending a
+// server default key to a browser-supplied endpoint.
+func resolveModelConfig(cfg config.Config, headers http.Header) (resolvedModelConfig, string, string) {
+	baseURL := strings.TrimSpace(headers.Get(modelBaseURLHeader))
+	model := strings.TrimSpace(headers.Get(modelNameHeader))
+	apiKey := strings.TrimSpace(headers.Get(modelAPIKeyHeader))
+
+	if baseURL != "" {
+		if model == "" {
+			return resolvedModelConfig{}, "MODEL_CONFIG_REQUIRED", "自定义 endpoint 必须同时填写 model。"
+		}
+		if apiKey == "" {
+			return resolvedModelConfig{}, "API_KEY_REQUIRED", "自定义 endpoint 必须同时填写 API Key。"
+		}
+		return resolvedModelConfig{baseURL: baseURL, model: model, apiKey: apiKey}, "", ""
+	}
+
+	if model == "" {
+		model = strings.TrimSpace(cfg.ModelName)
+	}
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.ModelAPIKey)
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(cfg.ModelBaseURL)
+	}
+	if baseURL == "" || model == "" {
+		return resolvedModelConfig{}, "MODEL_CONFIG_REQUIRED", "请先设置模型 endpoint 和 model，或联系部署者配置默认模型。"
+	}
+	if apiKey == "" {
+		return resolvedModelConfig{}, "API_KEY_REQUIRED", "请先设置 API Key，或联系部署者配置默认 API Key。"
+	}
+	return resolvedModelConfig{baseURL: baseURL, model: model, apiKey: apiKey}, "", ""
 }
 
 func currentSpec(version *domain.GenerationVersion) *domain.AppSpec {

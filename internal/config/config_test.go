@@ -31,10 +31,48 @@ func TestReadEnvFile(t *testing.T) {
 }
 
 func TestModelStatus(t *testing.T) {
-	cfg := Config{}
-	status := cfg.ModelStatus()
-	if !status.Available {
-		t.Fatal("ModelStatus().Available = false, want true")
+	tests := []struct {
+		name string
+		cfg  Config
+		want ModelStatus
+	}{
+		{
+			name: "empty config supports browser settings",
+			want: ModelStatus{Available: true},
+		},
+		{
+			name: "default provider without key",
+			cfg:  Config{ModelBaseURL: "https://default.example/v1", ModelName: "default-model"},
+			want: ModelStatus{Available: true, DefaultProviderConfigured: true},
+		},
+		{
+			name: "complete default model",
+			cfg:  Config{ModelBaseURL: "https://default.example/v1", ModelName: "default-model", ModelAPIKey: "default-key"},
+			want: ModelStatus{Available: true, DefaultProviderConfigured: true, DefaultConfigured: true},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.cfg.ModelStatus(); got != test.want {
+				t.Fatalf("ModelStatus() = %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadDefaultModelConfiguration(t *testing.T) {
+	filename := filepath.Join(t.TempDir(), ".env")
+	contents := "OPENAI_BASE_URL=https://default.example/v1\nOPENAI_MODEL=default-model\nOPENAI_API_KEY=default-key\n"
+	if err := os.WriteFile(filename, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ModelBaseURL != "https://default.example/v1" || cfg.ModelName != "default-model" || cfg.ModelAPIKey != "default-key" {
+		t.Fatal("Load() did not read the complete default model configuration")
 	}
 }
 

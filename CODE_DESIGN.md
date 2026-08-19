@@ -26,7 +26,7 @@
 
 ### 2.2 已确认约束
 
-- 每位用户在当前浏览器标签页中配置 OpenAI-compatible endpoint、model 和 API Key；服务端仅在单次请求内存中使用，不持久化或共享凭据。
+- 部署者可在 `.env` 配置默认 OpenAI-compatible endpoint、model 和 API Key；用户也可在当前浏览器标签页填写可选覆盖配置。服务端仅在单次请求内存中使用凭据，不持久化用户覆盖值。
 - 首次使用以本地昵称创建工作区，不做邮箱注册。
 - 首版先保证本地单二进制 Demo；用户已确认进行小规模线上验收，线上部署仍不承诺正式账号、跨设备同步或生产级持久化。
 - 延展能力固定为“版本历史与回滚”。
@@ -42,7 +42,7 @@
 | HTTP | 标准库 `net/http` | 使用方法 + 路径模式路由，避免不必要的 Web 框架依赖 |
 | 数据库 | SQLite + `database/sql` + pure-Go driver | 真实持久化、事务与版本数据可靠；不要求 CGO 或额外服务 |
 | 迁移 | 嵌入式 SQL migrations | 数据库 schema 随二进制发布，首次启动可自动初始化 |
-| 模型接入 | OpenAI-compatible HTTP adapter | 兼容用户提供的 base URL / API Key，并可在测试中替换 |
+| 模型接入 | OpenAI-compatible HTTP adapter | 支持 `.env` 默认配置及用户请求级覆盖，并可在测试中替换 |
 | 前端 | React + TypeScript + Vite | 高效实现 Atoms 风格三栏交互；只在构建期需要 Node.js |
 | 样式 | Tailwind CSS + 少量组件级样式 | 快速实现一致、响应式的产品界面 |
 | 预览 | `iframe srcDoc` + sandbox + `postMessage` | 真实执行生成应用，同时隔离工作台和会话 Cookie |
@@ -73,7 +73,7 @@
 │  ├─ Generated Files Validator + Preview Artifact Builder          │
 │  └─ SQLite Repository + Migrations                                │
 └────────────────────────────┬────────────────────────────────────┘
-                             │ HTTPS；请求内临时使用用户 API Key
+                             │ HTTPS；请求内使用默认或用户覆盖凭据
                              ▼
                       配置的模型 API
 
@@ -189,13 +189,23 @@ type GenerationVersion struct {
 ```dotenv
 ATOMS_DATA_DIR=./data
 ATOMS_MODEL_TIMEOUT=120s
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=your-model
+OPENAI_API_KEY=your-key
 # 仅本地/受信环境需要连接 localhost、私网或内网自部署模型时启用
 ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=false
 ```
 
-每位用户在前端自行填写 OpenAI-compatible `endpoint`、`model` 和 `API Key`；三项仅保存在当前标签页的 `sessionStorage`，每次生成时分别通过 `X-Model-Base-URL`、`X-Model-Name`、`X-Model-API-Key` 请求头发送给 Go 服务端。服务端只在该次请求的内存中使用它们，不写入 SQLite、Cookie、日志或响应。关闭标签页后浏览器自动清除配置。
+服务端从 `.env` 或进程环境读取 `OPENAI_BASE_URL`、`OPENAI_MODEL`、`OPENAI_API_KEY` 作为默认模型配置。每位用户也可以在前端填写 OpenAI-compatible `endpoint`、`model` 和 `API Key`；这些覆盖值仅保存在当前标签页的 `sessionStorage`，每次生成时分别通过 `X-Model-Base-URL`、`X-Model-Name`、`X-Model-API-Key` 请求头发送给 Go 服务端，不写入 SQLite、Cookie、日志或响应。
 
-endpoint 必须是绝对 `http`/`https` URL，不能包含 userinfo、query 或 fragment；默认拒绝 localhost、回环、链路本地、私网和保留地址，服务端通过 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=true` 才允许受信本地/内网部署。服务端不使用代理环境变量访问用户 endpoint，以减少绕过地址校验的风险。健康检查只报告服务是否可接受 BYOK 请求，绝不输出 endpoint、请求头或上游认证响应内容。`.env` 不提交；另提供不含真实值的 `.env.example`。
+解析优先级与安全规则：
+
+- 浏览器未填写任何配置时，使用完整的服务端默认配置；
+- 浏览器只填写 API Key 时，使用默认 endpoint/model 和用户 Key；也允许只覆盖 model；
+- 浏览器填写 endpoint 时，必须同时填写 model 和 API Key，三项全部使用用户值；绝不能把服务端默认 Key 发送到用户控制的 endpoint；
+- 解析后缺少 endpoint/model 返回 `MODEL_CONFIG_REQUIRED`，缺少 Key 返回 `API_KEY_REQUIRED`。
+
+endpoint 必须是绝对 `http`/`https` URL，不能包含 userinfo、query 或 fragment；默认拒绝 localhost、回环、链路本地、私网和保留地址，服务端通过 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS=true` 才允许受信本地/内网部署。服务端不使用代理环境变量访问用户 endpoint，以减少绕过地址校验的风险。健康检查只报告是否可接受覆盖配置、默认 provider 是否存在、默认完整配置是否存在三个布尔值，绝不输出 endpoint、model、请求头或认证内容。`.env` 不提交；另提供不含真实值的 `.env.example`。
 
 通用应用需要模型返回完整 HTML/CSS/JavaScript，响应通常比旧规格更大，因此模型调用默认超时为 120 秒。部署者可通过 `ATOMS_MODEL_TIMEOUT` 使用 Go duration 格式在 10 秒到 10 分钟之间调整；非法值应使服务启动失败，而不是静默回退。
 
@@ -248,7 +258,7 @@ PUT    /api/projects/{projectID}/versions/{versionID}/preview-state
 
 | 事件 | 负载 | 触发时机 |
 | --- | --- | --- |
-| `stage` | `{ "status", "label" }` | 真实开始模型请求、验证或编译时 |
+| `stage` | `{ "status", "label" }` | 真实准备上下文、开始模型请求、校验文件、编译或保存版本时 |
 | `result` | `{ "version", "message" }` | 数据库 transaction 成功提交后 |
 | `error` | `{ "code", "message", "retryable" }` | 可预期失败时 |
 
@@ -256,11 +266,13 @@ PUT    /api/projects/{projectID}/versions/{versionID}/preview-state
 
 1. session middleware 和项目归属校验；校验 `userRequest` 为 1–2,000 字符。
 2. 在 transaction 中保存 user message 与 `generation_attempts(status=running)`。
-3. 写入 `requesting_model` 阶段，创建具有超时原因的请求 context 后调用模型。
+3. 依次写入 `preparing_context`、`requesting_model` 阶段，创建具有超时原因的请求 context 后调用模型。
 4. 写入 `validating` 阶段，对模型 JSON 和业务规则做完整校验。
 5. 写入 `compiling` 阶段，调用纯 Go 编译器生成 artifact 与 checksum。
-6. 在一个 transaction 中写入 assistant message、version、attempt 状态，更新 `active_version_id`。
+6. 写入 `saving_version` 阶段，在一个 transaction 中写入 assistant message、version、attempt 状态，更新 `active_version_id`。
 7. 刷新并发送 `result`；若中途失败，更新 attempt、写入 system message，并发送 `error`。
+
+前端只展示这些可验证的服务端阶段、当前请求和已耗时，不展示或声称展示模型隐藏思维链。模型的完整 `assistantMessage`、计划和生成文件在校验并保存成功后随 `result` 返回，并进入对话、计划和文件面板。
 
 SSE handler 使用 `http.NewResponseController(w).Flush()` 及时发送真正的阶段事件。它不伪造“思考进度”；每个状态对应服务端实际正在执行的工作。
 
@@ -514,10 +526,10 @@ web → HTTP API（不导入 Go 内部实现）
 
 | 错误代码 | 场景 | 用户体验 | 是否可重试 |
 | --- | --- | --- | --- |
-| `API_KEY_REQUIRED` | 生成请求未携带用户 Key | 提示用户在当前标签页设置 Key | 设置后重试 |
-| `MODEL_CONFIG_REQUIRED` | 生成请求未携带 endpoint 或 model | 提示补充模型配置 | 设置后重试 |
+| `API_KEY_REQUIRED` | 默认与覆盖配置均未提供可用 Key | 提示填写 Key 或联系部署者配置默认 Key | 设置后重试 |
+| `MODEL_CONFIG_REQUIRED` | 默认与覆盖配置均未提供 endpoint/model，或自定义 endpoint 缺 model | 提示补充模型配置 | 设置后重试 |
 | `MODEL_ENDPOINT_INVALID` | endpoint 格式不合法或命中私网限制 | 提示检查 endpoint | 修改后重试 |
-| `AUTH_ERROR` | 上游拒绝用户凭据 | 提示检查用户自己的 API Key | 更新后重试 |
+| `AUTH_ERROR` | 上游拒绝默认或用户覆盖凭据 | 提示检查 API Key 或联系部署者 | 更新后重试 |
 | `UPSTREAM_TIMEOUT` | 模型超时/网络失败 | 保留请求和项目，提供重试 | 是 |
 | `MODEL_OUTPUT_INVALID` | 结果不符合受控规格 | 告知未生成可用应用 | 是 |
 | `UNSUPPORTED_REQUEST` | 需求超出小型离线单页应用边界 | 解释当前范围并建议缩小需求 | 是 |
@@ -526,7 +538,7 @@ web → HTTP API（不导入 Go 内部实现）
 
 可靠性与安全规则：
 
-- 用户 endpoint、model、API Key、授权头、Cookie token 和上游原始响应不得写入日志、错误消息或数据库；三项模型配置只允许存在于当前标签页 `sessionStorage` 和单次 Go 请求内存中。
+- 用户 endpoint、model、API Key、授权头、Cookie token 和上游原始响应不得写入日志、错误消息或数据库；用户覆盖配置只允许存在于当前标签页 `sessionStorage` 和单次 Go 请求内存中，默认配置仅从服务端环境读取。
 - 用户 endpoint 必须通过 scheme、userinfo、query、fragment、主机地址和 DNS 解析校验；默认拒绝 loopback、私网、链路本地、未指定和保留地址。允许私网时必须由部署者显式打开 `ATOMS_ALLOW_PRIVATE_MODEL_ENDPOINTS`，且不建议在公开服务启用。
 - 模型请求使用 `context.WithTimeoutCause`；错误判断使用 `errors.Is` / `errors.AsType`，保留根因但不向用户暴露敏感细节。
 - 生成链路记录项目/尝试 ID、阶段、耗时、错误码、上游 HTTP 状态和脱敏网络原因，不记录用户需求正文、endpoint、model、凭据或上游响应体。
@@ -570,7 +582,7 @@ web → HTTP API（不导入 Go 内部实现）
 | 5. 版本与运行态 | 版本历史、回滚、iframe 状态桥接 | 刷新、重启、回滚后数据一致 |
 | 6. 打磨与测试 | 响应式界面、Go/前端测试、README、验收脚本 | P0/P1 用例全部通过，`make build` 产出单二进制 |
 
-应在阶段 3 完成后立即做一次真实 API 联调，确认用户提供的 endpoint、model、Key 和兼容接口能力，而不是在所有 UI 完成后才发现配置问题。
+应在阶段 3 完成后立即做一次真实 API 联调，确认默认配置或用户覆盖配置的 endpoint、model、Key 和兼容接口能力，而不是在所有 UI 完成后才发现配置问题。
 
 ## 14. 需求追踪
 
@@ -590,7 +602,7 @@ web → HTTP API（不导入 Go 内部实现）
 - [x] 需求范围、非目标和本地交付边界已确认。
 - [x] Go 后端、React 前端构建/嵌入及单二进制运行方式已确认。
 - [x] 数据所有权、SQLite schema、会话与版本策略已定义。
-- [x] BYOK endpoint/model/API Key 边界、生成规格、编译器和预览隔离已定义。
+- [x] 默认模型与用户覆盖 endpoint/model/API Key 边界、生成规格、编译器和预览隔离已定义。
 - [x] HTTP API、SSE、错误码和测试路径已定义。
 - [x] 初始化 `go.mod`、`web/`、`.env.example`、`.gitignore`、migrations 和基础脚本。
-- [ ] 使用用户自行提供的 Key 完成一次真实 API 最短链路联调。
+- [ ] 使用默认配置和用户覆盖配置完成真实 API 最短链路联调。

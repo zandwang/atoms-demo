@@ -32,11 +32,27 @@ type HealthState =
   | { kind: "error" };
 type GenerationState =
   | { kind: "idle" }
-  | { kind: "running"; projectID: string; status: string; label: string }
+  | { kind: "running"; projectID: string; request: string; status: string; label: string; completedStages: string[]; startedAt: number }
   | { kind: "failed"; projectID: string; message: string; retryable: boolean };
 type PreviewTab = "preview" | "code" | "spec";
 
 const modelConfigStorageKey = "atoms_demo_model_config";
+
+function hasModelConfigOverride(config: ModelConfig) {
+  return config.baseURL.trim() !== "" || config.model.trim() !== "" || config.apiKey.trim() !== "";
+}
+
+function canUseModel(health: HealthState, userConfig: ModelConfig) {
+  if (health.kind !== "ready" || !health.value.model.available) {
+    return false;
+  }
+  if (userConfig.baseURL.trim() !== "") {
+    return userConfig.model.trim() !== "" && userConfig.apiKey.trim() !== "";
+  }
+  const modelReady = userConfig.model.trim() !== "" || health.value.model.defaultProviderConfigured;
+  const keyReady = userConfig.apiKey.trim() !== "" || health.value.model.defaultConfigured;
+  return modelReady && keyReady;
+}
 
 export function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapState>("loading");
@@ -208,12 +224,21 @@ export function App() {
 
   async function handleGenerate(project: Project, userRequest: string) {
     setNotice(null);
-    setGeneration({ kind: "running", projectID: project.id, status: "requesting_model", label: "正在请求模型…" });
+    const startedAt = Date.now();
+    setGeneration({ kind: "running", projectID: project.id, request: userRequest, status: "preparing_context", label: "正在整理项目上下文…", completedStages: [], startedAt });
     let receivedResult = false;
     try {
       await generateProject(project.id, userRequest, modelConfig, (event: GenerationEvent) => {
         if (event.type === "stage") {
-          setGeneration({ kind: "running", projectID: project.id, status: event.status, label: event.label });
+          setGeneration((current) => {
+            if (current.kind !== "running" || current.projectID !== project.id) {
+              return current;
+            }
+            const completedStages = current.status === event.status || current.completedStages.includes(current.status)
+              ? current.completedStages
+              : [...current.completedStages, current.status];
+            return { ...current, status: event.status, label: event.label, completedStages };
+          });
           return;
         }
         if (event.type === "result") {
@@ -287,7 +312,7 @@ export function App() {
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4 sm:pb-5">
           <Brand workspace={workspace} />
           <div className="ml-auto flex max-w-full flex-wrap justify-end gap-2">
-            <ModelConfigControl config={modelConfig} configured={modelConfig.baseURL !== "" && modelConfig.model !== "" && modelConfig.apiKey !== ""} onSave={handleModelConfigChange} />
+            <ModelConfigControl config={modelConfig} hasOverride={hasModelConfigOverride(modelConfig)} onSave={handleModelConfigChange} />
             <HealthBadge health={health} />
           </div>
         </header>
@@ -303,7 +328,7 @@ export function App() {
           <WorkspacePanel
             generation={generation}
             health={health}
-            modelConfigConfigured={modelConfig.baseURL !== "" && modelConfig.model !== "" && modelConfig.apiKey !== ""}
+            modelConfig={modelConfig}
             messages={messages}
             onDelete={handleDeleteProject}
             onGenerate={handleGenerate}
@@ -457,7 +482,7 @@ function WorkspacePanel({
   version,
   generation,
   health,
-  modelConfigConfigured,
+  modelConfig,
   projectDataState,
   onRename,
   onDelete,
@@ -468,7 +493,7 @@ function WorkspacePanel({
   version: GenerationVersion | null;
   generation: GenerationState;
   health: HealthState;
-  modelConfigConfigured: boolean;
+  modelConfig: ModelConfig;
   projectDataState: ProjectDataState;
   onRename: (project: Project) => Promise<void>;
   onDelete: (project: Project) => Promise<void>;
@@ -488,8 +513,8 @@ function WorkspacePanel({
 
   const isGenerating = generation.kind === "running" && generation.projectID === project.id;
   const generationFailure = generation.kind === "failed" && generation.projectID === project.id ? generation : null;
-  const providerReady = health.kind === "ready" && health.value.model.available;
-  const modelReady = providerReady && modelConfigConfigured;
+  const modelReady = canUseModel(health, modelConfig);
+  const modelHelp = modelConfigurationHelp(health, modelConfig);
 
   return (
     <section className="flex min-h-[600px] flex-col rounded-2xl border border-white/10 bg-white/[0.03] p-5">
@@ -511,20 +536,74 @@ function WorkspacePanel({
       {version ? <PlanCard version={version} /> : null}
       <MessageTimeline messages={messages} />
       <PromptComposer disabled={!modelReady || isGenerating} failure={generationFailure} onGenerate={(request) => onGenerate(project, request)} />
-      {!providerReady ? <p className="mt-3 text-xs leading-5 text-amber-100/80">服务端模型 endpoint 尚未配置，请联系部署者。</p> : null}
-      {providerReady && !modelConfigConfigured ? <p className="mt-3 text-xs leading-5 text-amber-100/80">请先在页面右上角设置模型 endpoint、model 和 API Key。</p> : null}
+      {modelHelp ? <p className="mt-3 text-xs leading-5 text-amber-100/80">{modelHelp}</p> : null}
     </section>
   );
 }
 
 function GenerationStatus({ running, failure }: { running: Extract<GenerationState, { kind: "running" }> | null; failure: Extract<GenerationState, { kind: "failed" }> | null }) {
   if (running) {
-    return <div className="mt-5 flex items-center gap-3 rounded-xl border border-violet-400/20 bg-violet-400/10 px-3 py-2.5 text-sm text-violet-100"><span className="size-2 animate-pulse rounded-full bg-violet-300" />{running.label}</div>;
+    return <GenerationProgress running={running} />;
   }
   if (failure) {
     return <div className="mt-5 rounded-xl border border-rose-400/20 bg-rose-400/10 px-3 py-2.5 text-sm text-rose-100">{failure.message}{failure.retryable ? " 你可以修改或直接重试这条需求。" : ""}</div>;
   }
   return null;
+}
+
+const generationStages = [
+  { status: "preparing_context", label: "准备上下文" },
+  { status: "requesting_model", label: "生成应用文件" },
+  { status: "validating", label: "校验文件与安全边界" },
+  { status: "compiling", label: "编译隔离预览" },
+  { status: "saving_version", label: "保存新版本" }
+] as const;
+
+function GenerationProgress({ running }: { running: Extract<GenerationState, { kind: "running" }> }) {
+  const [elapsedSeconds, setElapsedSeconds] = useState(() => Math.floor((Date.now() - running.startedAt) / 1000));
+
+  useEffect(() => {
+    setElapsedSeconds(Math.floor((Date.now() - running.startedAt) / 1000));
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - running.startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [running.startedAt]);
+
+  return (
+    <section className="mt-5 overflow-hidden rounded-xl border border-violet-400/20 bg-violet-400/[0.07]">
+      <div className="flex items-start justify-between gap-4 border-b border-violet-300/10 px-4 py-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-violet-100">
+            <span className="size-2 shrink-0 animate-pulse rounded-full bg-violet-300" />
+            {running.label}
+          </div>
+          <p className="mt-1 truncate text-xs text-zinc-400">{running.request}</p>
+        </div>
+        <time className="shrink-0 font-mono text-xs text-violet-200/80">{formatElapsed(elapsedSeconds)}</time>
+      </div>
+      <ol className="grid gap-px bg-white/[0.05] sm:grid-cols-5">
+        {generationStages.map((stage) => {
+          const completed = running.completedStages.includes(stage.status);
+          const active = running.status === stage.status;
+          return (
+            <li className={`flex min-h-16 items-center gap-2 bg-[#14131c] px-3 py-2 text-xs ${active ? "text-violet-100" : completed ? "text-emerald-200" : "text-zinc-600"}`} key={stage.status}>
+              <span className={`grid size-5 shrink-0 place-items-center rounded-full border text-[10px] ${active ? "border-violet-300 bg-violet-300/15" : completed ? "border-emerald-400/40 bg-emerald-400/10" : "border-white/10"}`}>
+                {completed ? "✓" : active ? "•" : generationStages.findIndex((item) => item.status === stage.status) + 1}
+              </span>
+              <span className="leading-4">{stage.label}</span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
+  );
+}
+
+function formatElapsed(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
 function PlanCard({ version }: { version: GenerationVersion }) {
@@ -817,6 +896,24 @@ function ErrorScreen() {
   return <main className="grid min-h-screen place-items-center bg-[#08080c] p-5 text-center text-zinc-200"><div><h1 className="text-xl font-semibold">无法连接本地服务</h1><p className="mt-2 text-sm text-zinc-500">请确认 Go 服务正在运行，然后刷新页面。</p></div></main>;
 }
 
+function modelConfigurationHelp(health: HealthState, userConfig: ModelConfig) {
+  if (canUseModel(health, userConfig)) {
+    return health.kind === "ready" && health.value.model.defaultConfigured && !hasModelConfigOverride(userConfig)
+      ? "正在使用服务端默认模型配置。你也可以在右上角填写配置来覆盖它。"
+      : null;
+  }
+  if (health.kind !== "ready" || !health.value.model.available) {
+    return "模型服务暂不可用，请稍后刷新页面。";
+  }
+  if (userConfig.baseURL.trim() !== "") {
+    return "填写自定义 endpoint 时，必须同时填写 model 和 API Key。";
+  }
+  if (health.value.model.defaultProviderConfigured) {
+    return "请在右上角填写 API Key；也可以填写 model 覆盖服务端默认模型。";
+  }
+  return "请在右上角填写 API Key，或完整填写 endpoint、model 和 API Key。";
+}
+
 function HealthBadge({ health }: { health: HealthState }) {
   if (health.kind === "loading") {
     return <span className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-zinc-500">Checking server…</span>;
@@ -824,13 +921,16 @@ function HealthBadge({ health }: { health: HealthState }) {
   if (health.kind === "error") {
     return <span className="rounded-full border border-rose-400/30 bg-rose-400/10 px-3 py-1.5 text-xs text-rose-200">Server unavailable</span>;
   }
+  if (health.value.model.defaultConfigured) {
+    return <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200">默认模型已就绪</span>;
+  }
   if (health.value.model.available) {
-    return <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-3 py-1.5 text-xs text-emerald-200">BYOK ready</span>;
+    return <span className="rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100">可使用自定义模型</span>;
   }
   return <span className="max-w-[52vw] truncate rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-100">Model unavailable</span>;
 }
 
-function ModelConfigControl({ config, configured, onSave }: { config: ModelConfig; configured: boolean; onSave: (value: ModelConfig) => void }) {
+function ModelConfigControl({ config, hasOverride, onSave }: { config: ModelConfig; hasOverride: boolean; onSave: (value: ModelConfig) => void }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState<ModelConfig>(config);
 
@@ -848,11 +948,11 @@ function ModelConfigControl({ config, configured, onSave }: { config: ModelConfi
   return (
     <>
       <button
-        className={`rounded-full border px-3 py-1.5 text-xs transition ${configured ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/15" : "border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/15"}`}
+        className={`rounded-full border px-3 py-1.5 text-xs transition ${hasOverride ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200 hover:bg-emerald-400/15" : "border-amber-400/30 bg-amber-400/10 text-amber-100 hover:bg-amber-400/15"}`}
         onClick={show}
         type="button"
       >
-        {configured ? "模型配置已设置" : "设置模型配置"}
+        {hasOverride ? "已设置覆盖配置" : "模型配置"}
       </button>
       {open ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-5" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
@@ -860,7 +960,7 @@ function ModelConfigControl({ config, configured, onSave }: { config: ModelConfi
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-base font-semibold text-zinc-100" id="model-config-title">模型配置</h2>
-                <p className="mt-1 text-xs text-zinc-500">当前标签页保存 · 关闭标签页后清除</p>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">可选覆盖服务端默认配置，当前标签页保存，关闭标签页后清除。填写自定义 endpoint 时需同时填写 model 和 API Key。</p>
               </div>
               <button aria-label="关闭" className="text-zinc-500 hover:text-zinc-200" onClick={() => setOpen(false)} type="button">×</button>
             </div>

@@ -16,6 +16,8 @@ export type Project = {
 
 export type ModelStatus = {
   available: boolean;
+  defaultProviderConfigured: boolean;
+  defaultConfigured: boolean;
 };
 
 export type ModelConfig = {
@@ -130,7 +132,7 @@ export type GenerationVersion = {
 
 export type GenerationStage = {
   type: "stage";
-  status: "requesting_model" | "validating" | "compiling";
+  status: "preparing_context" | "requesting_model" | "validating" | "compiling" | "saving_version";
   label: string;
 };
 
